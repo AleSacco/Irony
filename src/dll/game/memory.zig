@@ -30,6 +30,7 @@ pub fn Memory(comptime game_id: build_info.Game) type {
         pub const Functions = switch (game_id) {
             .t7 => struct {
                 tick: ?*const game.TickFunction(.t7) = null,
+                processInput: ?*const game.ProcessInputFunction(.t7) = null,
                 processCancelRequirement: ?*const game.ProcessCancelRequirementFunction = null,
                 unrealFree: ?*const game.UnrealFreeFunction = null,
                 findUnrealClass: ?*const game.FindUnrealClassFunction = null,
@@ -37,6 +38,7 @@ pub fn Memory(comptime game_id: build_info.Game) type {
             },
             .t8 => struct {
                 tick: ?*const game.TickFunction(.t8) = null,
+                processInput: ?*const game.ProcessInputFunction(.t8) = null,
                 processCancelRequirement: ?*const game.ProcessCancelRequirementFunction = null,
                 unrealFree: ?*const game.UnrealFreeFunction = null,
                 findUnrealClass: ?*const game.FindUnrealClassFunction = null,
@@ -149,6 +151,14 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                         game.TickFunction(.t7),
                         pattern(cache, "48 83 EC 58 84 C9"),
                     ),
+                    .processInput = functionPointer(
+                        "processInput",
+                        game.ProcessInputFunction(.t7),
+                        pattern(
+                            cache,
+                            "48 89 5C 24 08 44 89 44 24 18 89 54 24 10 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 20",
+                        ),
+                    ),
                     .processCancelRequirement = functionPointer(
                         "processCancelRequirement",
                         game.ProcessCancelRequirementFunction,
@@ -237,6 +247,11 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                         "tick",
                         game.TickFunction(.t8),
                         pattern(cache, "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 57 48 81 EC ?? 01 00 00 48 8B 1D"),
+                    ),
+                    .processInput = functionPointer(
+                        "processInput",
+                        game.ProcessInputFunction(.t8),
+                        pattern(cache, "48 8B C4 44 89 48 20 44 89 40 18 48 89 48 08 53 57"),
                     ),
                     .processCancelRequirement = functionPointer(
                         "processCancelRequirement",

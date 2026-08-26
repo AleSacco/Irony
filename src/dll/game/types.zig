@@ -29,7 +29,13 @@ pub fn Version(comptime game_id: build_info.Game) type {
     };
 }
 
-pub const PlayerSide = enum(u8) {
+pub const PlayerId = enum(u8) {
+    player_1 = 0,
+    player_2 = 1,
+    _,
+};
+
+pub const PlayerSide = enum(u32) {
     left = 0,
     right = 1,
     _,
@@ -407,6 +413,7 @@ pub fn Player(comptime game_id: build_info.Game) type {
     const T7MaxHealth = Converted(u32, u32, game.bitShiftRight(u32, 16), game.bitShiftLeft(u32, 16));
     return switch (game_id) {
         .t7 => sdk.memory.StructWithOffsets(null, &.{
+            field(0x0004, "id", PlayerId, &.player_1),
             field(0x00D8, "character_id", u32, &0),
             field(0x0130, "transform_matrix", Transform, &.fromRaw(.identity)),
             field(0x01B0, "floor_z", FloorZ, &.fromRaw(0)),
@@ -439,6 +446,7 @@ pub fn Player(comptime game_id: build_info.Game) type {
             field(0x14F8, "max_health", T7MaxHealth, &.fromRaw(0)),
         }),
         .t8 => sdk.memory.StructWithOffsets(null, &.{
+            field(0x0004, "id", PlayerId, &.player_1),
             field(0x0168, "character_id", u32, &0),
             field(0x0200, "transform_matrix", Transform, &.fromRaw(.identity)),
             field(0x0354, "floor_z", FloorZ, &.fromRaw(0)),
@@ -477,12 +485,6 @@ pub fn Player(comptime game_id: build_info.Game) type {
         }),
     };
 }
-
-pub const PlayerId = enum(u8) {
-    player_1 = 0,
-    player_2 = 1,
-    _,
-};
 
 pub const PlayerName = [32]u8;
 
@@ -964,6 +966,26 @@ pub fn TickFunction(comptime game_id: build_info.Game) type {
     return switch (game_id) {
         .t7 => fn (param_1: u8, param_2: u32) callconv(.c) void,
         .t8 => fn (param_1: u64, param_2: u8, param_3: u8, param_4: u8) callconv(.c) void,
+    };
+}
+
+pub fn ProcessInputFunction(comptime game_id: build_info.Game) type {
+    return switch (game_id) {
+        .t7 => fn (
+            player: Pointer(Player(.t7)),
+            player_side: PlayerSide,
+            down_input: Input(.t7),
+            pressed_input: Input(.t7),
+        ) callconv(.c) void,
+        .t8 => fn (
+            player: Pointer(Player(.t8)),
+            player_side: PlayerSide,
+            down_input: Input(.t8),
+            pressed_input: Input(.t8),
+            param_5: Pointer(sdk.math.Vec2),
+            param_6: Pointer(sdk.math.Vec2),
+            param_7: u8,
+        ) callconv(.c) void,
     };
 }
 
