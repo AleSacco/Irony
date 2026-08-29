@@ -4,21 +4,59 @@ const build_info = @import("build_info");
 const sdk = @import("../../sdk/root.zig");
 const game = @import("root.zig");
 
+pub fn InputOverride(comptime game_id: build_info.Game) type {
+    return struct {
+        player_1: ?InputOverridePlayer = null,
+        player_2: ?InputOverridePlayer = null,
+
+        const InputOverridePlayer = struct {
+            expected_side: game.PlayerSide,
+            previous_input: game.Input(game_id),
+            current_input: game.Input(game_id),
+        };
+        pub const Player = InputOverridePlayer;
+    };
+}
+
 pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () void) type {
     return struct {
         var tick_hook: ?TickHook = null;
+        var process_input_hook: ?ProcessInputHook = null;
         var cancel_requirements_hook: ?CancelRequirementsHook = null;
         var render_targets_hook: ?RenderTargetsHook = null;
         var active_hook_calls = std.atomic.Value(u8).init(0);
 
+        pub var input_override: InputOverride(game_id) = .{};
         pub var cancel_requirements: game.CancelRequirements = .{};
         pub var depth_buffer_address: usize = 0;
 
         const TickHook = sdk.memory.Hook(game.TickFunction(game_id));
+        const ProcessInputHook = sdk.memory.Hook(game.ProcessInputFunction(game_id));
         const CancelRequirementsHook = sdk.memory.Hook(game.ProcessCancelRequirementFunction);
         const RenderTargetsHook = sdk.memory.Hook(game.SetRenderTargetsFunction);
 
         pub fn init(game_functions: *const game.Memory(game_id).Functions) void {
+            std.log.debug("Creating process input hook...", .{});
+            if (game_functions.processInput) |function| {
+                const detour = switch (game_id) {
+                    .t7 => onT7ProcessInput,
+                    .t8 => onT8ProcessInput,
+                };
+                if (ProcessInputHook.create(function, detour)) |hook| {
+                    process_input_hook = hook;
+                    std.log.info("Process input hook created.", .{});
+                } else |err| {
+                    if (!builtin.is_test) {
+                        sdk.misc.error_context.append("Failed to create process input hook.", .{});
+                        sdk.misc.error_context.logError(err);
+                    }
+                }
+            } else if (!builtin.is_test) {
+                sdk.misc.error_context.new("Process input function not found.", .{});
+                sdk.misc.error_context.append("Failed to create process input hook.", .{});
+                sdk.misc.error_context.logError(error.NotFound);
+            }
+
             std.log.debug("Creating tick hook...", .{});
             if (game_functions.tick) |function| {
                 const detour = switch (game_id) {
@@ -74,6 +112,16 @@ pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () vo
                     sdk.misc.error_context.new("SetRenderTargets function not found.", .{});
                     sdk.misc.error_context.append("Failed to create render targets hook.", .{});
                     sdk.misc.error_context.logError(error.NotFound);
+                }
+            }
+
+            if (process_input_hook) |*hook| {
+                std.log.debug("Enabling process input hook...", .{});
+                if (hook.enable()) {
+                    std.log.info("Process input hook enabled.", .{});
+                } else |err| {
+                    sdk.misc.error_context.append("Failed to enable process input hook.", .{});
+                    sdk.misc.error_context.logError(err);
                 }
             }
 
@@ -150,6 +198,19 @@ pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () vo
                 std.log.debug("Nothing to destroy.", .{});
             }
 
+            std.log.debug("Destroying process input hook...", .{});
+            if (process_input_hook) |*hook| {
+                if (hook.destroy()) {
+                    std.log.info("Process input hook destroyed.", .{});
+                    tick_hook = null;
+                } else |err| {
+                    sdk.misc.error_context.append("Failed to destroy process input hook.", .{});
+                    sdk.misc.error_context.logError(err);
+                }
+            } else {
+                std.log.debug("Nothing to destroy.", .{});
+            }
+
             while (active_hook_calls.load(.seq_cst) > 0) {
                 std.Thread.sleep(10 * std.time.ns_per_ms);
             }
@@ -169,6 +230,71 @@ pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () vo
             cancel_requirements = .{};
             tick_hook.?.original(param_1, param_2, param_3, param_4);
             onTick();
+        }
+
+        fn onT7ProcessInput(
+            player: sdk.memory.Pointer(game.Player(.t7)),
+            player_side: game.PlayerSide,
+            down_input: game.Input(.t7),
+            press_input: game.Input(.t7),
+        ) callconv(.c) void {
+            _ = active_hook_calls.fetchAdd(1, .seq_cst);
+            defer _ = active_hook_calls.fetchSub(1, .seq_cst);
+            var new_down_input = down_input;
+            var new_press_input = press_input;
+            applyInputOverride(player, player_side, &new_down_input, &new_press_input);
+            process_input_hook.?.original(player, player_side, new_down_input, new_press_input);
+        }
+
+        fn onT8ProcessInput(
+            player: sdk.memory.Pointer(game.Player(.t8)),
+            player_side: game.PlayerSide,
+            down_input: game.Input(.t8),
+            press_input: game.Input(.t8),
+            param_5: sdk.memory.Pointer(sdk.math.Vec2),
+            param_6: sdk.memory.Pointer(sdk.math.Vec2),
+            param_7: u8,
+        ) callconv(.c) void {
+            _ = active_hook_calls.fetchAdd(1, .seq_cst);
+            defer _ = active_hook_calls.fetchSub(1, .seq_cst);
+            var new_down_input = down_input;
+            var new_press_input = press_input;
+            applyInputOverride(player, player_side, &new_down_input, &new_press_input);
+            process_input_hook.?.original(
+                player,
+                player_side,
+                new_down_input,
+                new_press_input,
+                param_5,
+                param_6,
+                param_7,
+            );
+        }
+
+        fn applyInputOverride(
+            player_maybe: sdk.memory.Pointer(game.Player(game_id)),
+            player_side: game.PlayerSide,
+            down_input: *game.Input(game_id),
+            press_input: *game.Input(game_id),
+        ) void {
+            const player = player_maybe.toConstPointer() orelse return;
+            const override = switch (player.id) {
+                .player_1 => input_override.player_1 orelse return,
+                .player_2 => input_override.player_2 orelse return,
+                else => return,
+            };
+            down_input.* = override.current_input;
+            const previous_input: u32 = @bitCast(override.previous_input);
+            const current_input: u32 = @bitCast(override.current_input);
+            press_input.* = @bitCast((~previous_input) & current_input);
+            if (player_side != override.expected_side) {
+                const t1 = down_input.left;
+                down_input.left = down_input.right;
+                down_input.right = t1;
+                const t2 = press_input.left;
+                press_input.left = press_input.right;
+                press_input.right = t2;
+            }
         }
 
         fn onProcessCancelRequirement(
@@ -274,6 +400,188 @@ test "should call onTick and original when tick function is called in T8" {
     try testing.expectEqual(4, Tick.last_param_3);
     try testing.expectEqual(5, Tick.last_param_4);
     try testing.expectEqual(1, OnTick.times_called);
+}
+
+test "should apply input override correctly in T7" {
+    const ProcessInput = struct {
+        var times_called: usize = 0;
+        var last_player: ?sdk.memory.Pointer(game.Player(.t7)) = null;
+        var last_player_side: ?game.PlayerSide = null;
+        var last_down_input: ?game.Input(.t7) = null;
+        var last_press_input: ?game.Input(.t7) = null;
+        fn call(
+            player: sdk.memory.Pointer(game.Player(.t7)),
+            player_side: game.PlayerSide,
+            down_input: game.Input(.t7),
+            press_input: game.Input(.t7),
+        ) callconv(.c) void {
+            times_called += 1;
+            last_player = player;
+            last_player_side = player_side;
+            last_down_input = down_input;
+            last_press_input = press_input;
+        }
+    };
+    const OnTick = struct {
+        fn call() void {}
+    };
+    const hooks = Hooks(.t7, OnTick.call);
+
+    try sdk.memory.hooking.init();
+    defer sdk.memory.hooking.deinit() catch @panic("Failed to de-initialize hooking.");
+    hooks.init(&.{ .processInput = ProcessInput.call });
+    defer hooks.deinit();
+
+    hooks.input_override = .{
+        .player_1 = .{
+            .expected_side = .left,
+            .previous_input = .{ .down = true, .button_1 = true },
+            .current_input = .{ .down = true, .right = true, .button_1 = true, .button_2 = true },
+        },
+        .player_2 = null,
+    };
+    const player_1 = sdk.memory.Pointer(game.Player(.t7)).fromPointer(&.{ .id = .player_1 });
+    const player_2 = sdk.memory.Pointer(game.Player(.t7)).fromPointer(&.{ .id = .player_2 });
+
+    ProcessInput.call(player_1, .left, .{ .button_3 = true }, .{ .button_4 = true });
+    try testing.expectEqual(1, ProcessInput.times_called);
+    try testing.expectEqual(player_1, ProcessInput.last_player);
+    try testing.expectEqual(.left, ProcessInput.last_player_side);
+    try testing.expectEqual(
+        game.Input(.t7){ .right = true, .down = true, .button_1 = true, .button_2 = true },
+        ProcessInput.last_down_input,
+    );
+    try testing.expectEqual(
+        game.Input(.t7){ .right = true, .button_2 = true },
+        ProcessInput.last_press_input,
+    );
+
+    ProcessInput.call(player_1, .right, .{ .button_3 = true }, .{ .button_4 = true });
+    try testing.expectEqual(2, ProcessInput.times_called);
+    try testing.expectEqual(player_1, ProcessInput.last_player);
+    try testing.expectEqual(.right, ProcessInput.last_player_side);
+    try testing.expectEqual(
+        game.Input(.t7){ .left = true, .down = true, .button_1 = true, .button_2 = true },
+        ProcessInput.last_down_input,
+    );
+    try testing.expectEqual(
+        game.Input(.t7){ .left = true, .button_2 = true },
+        ProcessInput.last_press_input,
+    );
+
+    ProcessInput.call(player_2, .right, .{ .button_3 = true }, .{ .button_4 = true });
+    try testing.expectEqual(3, ProcessInput.times_called);
+    try testing.expectEqual(player_2, ProcessInput.last_player);
+    try testing.expectEqual(.right, ProcessInput.last_player_side);
+    try testing.expectEqual(
+        game.Input(.t7){ .button_3 = true },
+        ProcessInput.last_down_input,
+    );
+    try testing.expectEqual(
+        game.Input(.t7){ .button_4 = true },
+        ProcessInput.last_press_input,
+    );
+}
+
+test "should apply input override correctly in T8" {
+    const ProcessInput = struct {
+        var times_called: usize = 0;
+        var last_player: ?sdk.memory.Pointer(game.Player(.t8)) = null;
+        var last_player_side: ?game.PlayerSide = null;
+        var last_down_input: ?game.Input(.t8) = null;
+        var last_press_input: ?game.Input(.t8) = null;
+        var last_param_5: ?sdk.memory.Pointer(sdk.math.Vec2) = null;
+        var last_param_6: ?sdk.memory.Pointer(sdk.math.Vec2) = null;
+        var last_param_7: ?u8 = null;
+        fn call(
+            player: sdk.memory.Pointer(game.Player(.t8)),
+            player_side: game.PlayerSide,
+            down_input: game.Input(.t8),
+            press_input: game.Input(.t8),
+            param_5: sdk.memory.Pointer(sdk.math.Vec2),
+            param_6: sdk.memory.Pointer(sdk.math.Vec2),
+            param_7: u8,
+        ) callconv(.c) void {
+            times_called += 1;
+            last_player = player;
+            last_player_side = player_side;
+            last_down_input = down_input;
+            last_press_input = press_input;
+            last_param_5 = param_5;
+            last_param_6 = param_6;
+            last_param_7 = param_7;
+        }
+    };
+    const OnTick = struct {
+        fn call() void {}
+    };
+    const hooks = Hooks(.t8, OnTick.call);
+
+    try sdk.memory.hooking.init();
+    defer sdk.memory.hooking.deinit() catch @panic("Failed to de-initialize hooking.");
+    hooks.init(&.{ .processInput = ProcessInput.call });
+    defer hooks.deinit();
+
+    hooks.input_override = .{
+        .player_1 = .{
+            .expected_side = .left,
+            .previous_input = .{ .down = true, .button_1 = true },
+            .current_input = .{ .down = true, .right = true, .button_1 = true, .button_2 = true },
+        },
+        .player_2 = null,
+    };
+    const player_1 = sdk.memory.Pointer(game.Player(.t8)).fromPointer(&.{ .id = .player_1 });
+    const player_2 = sdk.memory.Pointer(game.Player(.t8)).fromPointer(&.{ .id = .player_2 });
+    const param_5 = sdk.memory.Pointer(sdk.math.Vec2).fromPointer(&.zero);
+    const param_6 = sdk.memory.Pointer(sdk.math.Vec2).fromPointer(&.zero);
+
+    ProcessInput.call(player_1, .left, .{ .button_3 = true }, .{ .button_4 = true }, param_5, param_6, 11);
+    try testing.expectEqual(1, ProcessInput.times_called);
+    try testing.expectEqual(player_1, ProcessInput.last_player);
+    try testing.expectEqual(.left, ProcessInput.last_player_side);
+    try testing.expectEqual(
+        game.Input(.t8){ .right = true, .down = true, .button_1 = true, .button_2 = true },
+        ProcessInput.last_down_input,
+    );
+    try testing.expectEqual(
+        game.Input(.t8){ .right = true, .button_2 = true },
+        ProcessInput.last_press_input,
+    );
+    try testing.expectEqual(param_5, ProcessInput.last_param_5);
+    try testing.expectEqual(param_6, ProcessInput.last_param_6);
+    try testing.expectEqual(11, ProcessInput.last_param_7);
+
+    ProcessInput.call(player_1, .right, .{ .button_3 = true }, .{ .button_4 = true }, param_5, param_6, 12);
+    try testing.expectEqual(2, ProcessInput.times_called);
+    try testing.expectEqual(player_1, ProcessInput.last_player);
+    try testing.expectEqual(.right, ProcessInput.last_player_side);
+    try testing.expectEqual(
+        game.Input(.t8){ .left = true, .down = true, .button_1 = true, .button_2 = true },
+        ProcessInput.last_down_input,
+    );
+    try testing.expectEqual(
+        game.Input(.t8){ .left = true, .button_2 = true },
+        ProcessInput.last_press_input,
+    );
+    try testing.expectEqual(param_5, ProcessInput.last_param_5);
+    try testing.expectEqual(param_6, ProcessInput.last_param_6);
+    try testing.expectEqual(12, ProcessInput.last_param_7);
+
+    ProcessInput.call(player_2, .right, .{ .button_3 = true }, .{ .button_4 = true }, param_5, param_6, 13);
+    try testing.expectEqual(3, ProcessInput.times_called);
+    try testing.expectEqual(player_2, ProcessInput.last_player);
+    try testing.expectEqual(.right, ProcessInput.last_player_side);
+    try testing.expectEqual(
+        game.Input(.t8){ .button_3 = true },
+        ProcessInput.last_down_input,
+    );
+    try testing.expectEqual(
+        game.Input(.t8){ .button_4 = true },
+        ProcessInput.last_press_input,
+    );
+    try testing.expectEqual(param_5, ProcessInput.last_param_5);
+    try testing.expectEqual(param_6, ProcessInput.last_param_6);
+    try testing.expectEqual(13, ProcessInput.last_param_7);
 }
 
 test "should set cancel_requirements and call original when process cancel requirement is called" {

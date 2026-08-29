@@ -27,6 +27,7 @@ pub const encryptHealth = @import("conversions.zig").encryptHealth;
 pub const composeConversions = @import("conversions.zig").composeConversions;
 pub const convertEachVectorElement = @import("conversions.zig").convertEachVectorElement;
 pub const FrameDetector = @import("frame_detector.zig").FrameDetector;
+pub const InputOverride = @import("hooks.zig").InputOverride;
 pub const Hooks = @import("hooks.zig").Hooks;
 pub const Memory = @import("memory.zig").Memory;
 pub const Version = @import("types.zig").Version;
