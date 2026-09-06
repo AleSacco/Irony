@@ -4,20 +4,6 @@ const build_info = @import("build_info");
 const sdk = @import("../../sdk/root.zig");
 const game = @import("root.zig");
 
-pub fn InputOverride(comptime game_id: build_info.Game) type {
-    return struct {
-        player_1: ?InputOverridePlayer = null,
-        player_2: ?InputOverridePlayer = null,
-
-        const InputOverridePlayer = struct {
-            expected_side: game.PlayerSide,
-            previous_input: game.Input(game_id),
-            current_input: game.Input(game_id),
-        };
-        pub const Player = InputOverridePlayer;
-    };
-}
-
 pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () void) type {
     return struct {
         var tick_hook: ?TickHook = null;
@@ -26,7 +12,7 @@ pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () vo
         var render_targets_hook: ?RenderTargetsHook = null;
         var active_hook_calls = std.atomic.Value(u8).init(0);
 
-        pub var input_override: InputOverride(game_id) = .{};
+        pub var input_override: game.InputOverride = .{};
         pub var cancel_requirements: game.CancelRequirements = .{};
         pub var depth_buffer_address: usize = 0;
 
@@ -278,23 +264,7 @@ pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () vo
             press_input: *game.Input(game_id),
         ) void {
             const player = player_maybe.toConstPointer() orelse return;
-            const override = switch (player.id) {
-                .player_1 => input_override.player_1 orelse return,
-                .player_2 => input_override.player_2 orelse return,
-                else => return,
-            };
-            down_input.* = override.current_input;
-            const previous_input: u32 = @bitCast(override.previous_input);
-            const current_input: u32 = @bitCast(override.current_input);
-            press_input.* = @bitCast((~previous_input) & current_input);
-            if (player_side != override.expected_side) {
-                const t1 = down_input.left;
-                down_input.left = down_input.right;
-                down_input.right = t1;
-                const t2 = press_input.left;
-                press_input.left = press_input.right;
-                press_input.right = t2;
-            }
+            input_override.apply(game_id, player.id, player_side, down_input, press_input);
         }
 
         fn onProcessCancelRequirement(
@@ -434,9 +404,8 @@ test "should apply input override correctly in T7" {
 
     hooks.input_override = .{
         .player_1 = .{
-            .expected_side = .left,
             .previous_input = .{ .down = true, .button_1 = true },
-            .current_input = .{ .down = true, .right = true, .button_1 = true, .button_2 = true },
+            .current_input = .{ .down = true, .forward = true, .button_1 = true, .button_2 = true },
         },
         .player_2 = null,
     };
@@ -448,39 +417,27 @@ test "should apply input override correctly in T7" {
     try testing.expectEqual(player_1, ProcessInput.last_player);
     try testing.expectEqual(.left, ProcessInput.last_player_side);
     try testing.expectEqual(
-        game.Input(.t7){ .right = true, .down = true, .button_1 = true, .button_2 = true },
+        game.Input(.t7){ .down = true, .right = true, .button_1 = true, .button_2 = true },
         ProcessInput.last_down_input,
     );
-    try testing.expectEqual(
-        game.Input(.t7){ .right = true, .button_2 = true },
-        ProcessInput.last_press_input,
-    );
+    try testing.expectEqual(game.Input(.t7){ .right = true, .button_2 = true }, ProcessInput.last_press_input);
 
     ProcessInput.call(player_1, .right, .{ .button_3 = true }, .{ .button_4 = true });
     try testing.expectEqual(2, ProcessInput.times_called);
     try testing.expectEqual(player_1, ProcessInput.last_player);
     try testing.expectEqual(.right, ProcessInput.last_player_side);
     try testing.expectEqual(
-        game.Input(.t7){ .left = true, .down = true, .button_1 = true, .button_2 = true },
+        game.Input(.t7){ .down = true, .left = true, .button_1 = true, .button_2 = true },
         ProcessInput.last_down_input,
     );
-    try testing.expectEqual(
-        game.Input(.t7){ .left = true, .button_2 = true },
-        ProcessInput.last_press_input,
-    );
+    try testing.expectEqual(game.Input(.t7){ .left = true, .button_2 = true }, ProcessInput.last_press_input);
 
     ProcessInput.call(player_2, .right, .{ .button_3 = true }, .{ .button_4 = true });
     try testing.expectEqual(3, ProcessInput.times_called);
     try testing.expectEqual(player_2, ProcessInput.last_player);
     try testing.expectEqual(.right, ProcessInput.last_player_side);
-    try testing.expectEqual(
-        game.Input(.t7){ .button_3 = true },
-        ProcessInput.last_down_input,
-    );
-    try testing.expectEqual(
-        game.Input(.t7){ .button_4 = true },
-        ProcessInput.last_press_input,
-    );
+    try testing.expectEqual(game.Input(.t7){ .button_3 = true }, ProcessInput.last_down_input);
+    try testing.expectEqual(game.Input(.t7){ .button_4 = true }, ProcessInput.last_press_input);
 }
 
 test "should apply input override correctly in T8" {
@@ -524,9 +481,8 @@ test "should apply input override correctly in T8" {
 
     hooks.input_override = .{
         .player_1 = .{
-            .expected_side = .left,
             .previous_input = .{ .down = true, .button_1 = true },
-            .current_input = .{ .down = true, .right = true, .button_1 = true, .button_2 = true },
+            .current_input = .{ .down = true, .forward = true, .button_1 = true, .button_2 = true },
         },
         .player_2 = null,
     };
@@ -540,13 +496,10 @@ test "should apply input override correctly in T8" {
     try testing.expectEqual(player_1, ProcessInput.last_player);
     try testing.expectEqual(.left, ProcessInput.last_player_side);
     try testing.expectEqual(
-        game.Input(.t8){ .right = true, .down = true, .button_1 = true, .button_2 = true },
+        game.Input(.t8){ .down = true, .right = true, .button_1 = true, .button_2 = true },
         ProcessInput.last_down_input,
     );
-    try testing.expectEqual(
-        game.Input(.t8){ .right = true, .button_2 = true },
-        ProcessInput.last_press_input,
-    );
+    try testing.expectEqual(game.Input(.t8){ .right = true, .button_2 = true }, ProcessInput.last_press_input);
     try testing.expectEqual(param_5, ProcessInput.last_param_5);
     try testing.expectEqual(param_6, ProcessInput.last_param_6);
     try testing.expectEqual(11, ProcessInput.last_param_7);
@@ -556,13 +509,10 @@ test "should apply input override correctly in T8" {
     try testing.expectEqual(player_1, ProcessInput.last_player);
     try testing.expectEqual(.right, ProcessInput.last_player_side);
     try testing.expectEqual(
-        game.Input(.t8){ .left = true, .down = true, .button_1 = true, .button_2 = true },
+        game.Input(.t8){ .down = true, .left = true, .button_1 = true, .button_2 = true },
         ProcessInput.last_down_input,
     );
-    try testing.expectEqual(
-        game.Input(.t8){ .left = true, .button_2 = true },
-        ProcessInput.last_press_input,
-    );
+    try testing.expectEqual(game.Input(.t8){ .left = true, .button_2 = true }, ProcessInput.last_press_input);
     try testing.expectEqual(param_5, ProcessInput.last_param_5);
     try testing.expectEqual(param_6, ProcessInput.last_param_6);
     try testing.expectEqual(12, ProcessInput.last_param_7);
@@ -571,14 +521,8 @@ test "should apply input override correctly in T8" {
     try testing.expectEqual(3, ProcessInput.times_called);
     try testing.expectEqual(player_2, ProcessInput.last_player);
     try testing.expectEqual(.right, ProcessInput.last_player_side);
-    try testing.expectEqual(
-        game.Input(.t8){ .button_3 = true },
-        ProcessInput.last_down_input,
-    );
-    try testing.expectEqual(
-        game.Input(.t8){ .button_4 = true },
-        ProcessInput.last_press_input,
-    );
+    try testing.expectEqual(game.Input(.t8){ .button_3 = true }, ProcessInput.last_down_input);
+    try testing.expectEqual(game.Input(.t8){ .button_4 = true }, ProcessInput.last_press_input);
     try testing.expectEqual(param_5, ProcessInput.last_param_5);
     try testing.expectEqual(param_6, ProcessInput.last_param_6);
     try testing.expectEqual(13, ProcessInput.last_param_7);

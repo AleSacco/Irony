@@ -92,6 +92,7 @@ test {
     _ = @import("dll/game/conversions.zig");
     _ = @import("dll/game/frame_detector.zig");
     _ = @import("dll/game/hooks.zig");
+    _ = @import("dll/game/input_override.zig");
     _ = @import("dll/game/memory.zig");
     _ = @import("dll/game/types.zig");
 
