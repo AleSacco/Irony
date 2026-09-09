@@ -18,6 +18,7 @@ pub const Core = struct {
     move_detector: core.MoveDetector,
     move_measurer: core.MoveMeasurer,
     automation: core.Automation(.{}),
+    tool_assisted_input: core.ToolAssistedInput,
     controller: core.Controller,
 
     const Self = @This();
@@ -31,12 +32,14 @@ pub const Core = struct {
             .move_detector = .{},
             .move_measurer = .{},
             .automation = .{},
+            .tool_assisted_input = core.ToolAssistedInput.init(allocator),
             .controller = core.Controller.init(allocator),
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.controller.deinit();
+        self.tool_assisted_input.deinit();
     }
 
     pub fn tick(
@@ -44,6 +47,7 @@ pub const Core = struct {
         base_dir: *const sdk.misc.BaseDir,
         settings: *const model.Settings,
         game_memory: *const game.Memory(build_info.game),
+        input_override: *game.InputOverride,
         context: anytype,
         processFrame: *const fn (context: @TypeOf(context), frame: *const model.Frame) void,
     ) void {
@@ -56,6 +60,7 @@ pub const Core = struct {
         self.move_detector.detect(&frame);
         self.move_measurer.measure(&frame);
         self.automation.processFrame(base_dir, &settings.automation, &self.controller, &frame);
+        self.tool_assisted_input.processFrame(input_override);
         self.controller.processFrame(&frame, context, processFrame);
     }
 

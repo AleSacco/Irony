@@ -192,10 +192,15 @@ pub const EventBuss = struct {
         self.ui.processFrame(settings, frame);
     }
 
-    pub fn tick(self: *Self, base_dir: *const sdk.misc.BaseDir, game_memory: *game.Memory(build_info.game)) void {
+    pub fn tick(
+        self: *Self,
+        base_dir: *const sdk.misc.BaseDir,
+        game_memory: *game.Memory(build_info.game),
+        input_override: *game.InputOverride,
+    ) void {
         game_memory.updateAddresses();
         const settings = self.settings_task.peek() orelse return;
-        self.core.tick(base_dir, settings, game_memory, self, processFrame);
+        self.core.tick(base_dir, settings, game_memory, input_override, self, processFrame);
     }
 
     pub fn draw(
