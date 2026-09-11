@@ -160,7 +160,7 @@ pub const MainWindow = struct {
 
         self.file_menu.draw(base_dir, file_dialog_context, controller, &ui_instance.is_open);
         self.view.camera.drawMenuBar();
-        drawSettingsButton(ui_instance);
+        drawWindowMenu(ui_instance);
         drawHelpMenu(ui_instance);
 
         if (!settings.show_memory_usage and !settings.show_version_info) {
@@ -183,13 +183,27 @@ pub const MainWindow = struct {
         self.menu_bar_right_side_width = right_side_end_x - right_side_start_x;
     }
 
-    fn drawSettingsButton(ui_instance: *ui.Ui) void {
-        if (!imgui.igMenuItem_Bool(ui.SettingsWindow.name, null, false, true)) {
+    fn drawWindowMenu(ui_instance: *ui.Ui) void {
+        if (!imgui.igBeginMenu("Window", true)) {
             return;
         }
-        ui_instance.settings_window.is_open = !ui_instance.settings_window.is_open;
-        if (ui_instance.settings_window.is_open) {
+        defer imgui.igEndMenu();
+        if (imgui.igMenuItem_Bool(ui.TaiWindow.name, null, false, true)) {
+            ui_instance.tai_window.is_open = true;
+            imgui.igSetWindowFocus_Str(ui.TaiWindow.name);
+        }
+        if (imgui.igMenuItem_Bool(ui.SettingsWindow.name, null, false, true)) {
+            ui_instance.settings_window.is_open = true;
             imgui.igSetWindowFocus_Str(ui.SettingsWindow.name);
+        }
+        imgui.igSeparator();
+        if (imgui.igMenuItem_Bool(ui.GameMemoryWindow.name, null, false, true)) {
+            ui_instance.game_memory_window.is_open = true;
+            imgui.igSetWindowFocus_Str(ui.GameMemoryWindow.name);
+        }
+        if (imgui.igMenuItem_Bool(ui.FrameWindow.name, null, false, true)) {
+            ui_instance.frame_window.is_open = true;
+            imgui.igSetWindowFocus_Str(ui.FrameWindow.name);
         }
     }
 
@@ -201,14 +215,6 @@ pub const MainWindow = struct {
         if (imgui.igMenuItem_Bool(ui.LogsWindow.name, null, false, true)) {
             ui_instance.logs_window.is_open = true;
             imgui.igSetWindowFocus_Str(ui.LogsWindow.name);
-        }
-        if (imgui.igMenuItem_Bool(ui.GameMemoryWindow.name, null, false, true)) {
-            ui_instance.game_memory_window.is_open = true;
-            imgui.igSetWindowFocus_Str(ui.GameMemoryWindow.name);
-        }
-        if (imgui.igMenuItem_Bool(ui.FrameWindow.name, null, false, true)) {
-            ui_instance.frame_window.is_open = true;
-            imgui.igSetWindowFocus_Str(ui.FrameWindow.name);
         }
         imgui.igSeparator();
         if (imgui.igBeginMenu("Donate", true)) {

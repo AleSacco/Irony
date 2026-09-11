@@ -13,6 +13,7 @@ pub const Ui = struct {
     is_first_draw: bool,
     is_open: bool,
     main_window: ui.MainWindow,
+    tai_window: ui.TaiWindow,
     settings_window: ui.SettingsWindow,
     logs_window: ui.LogsWindow,
     game_memory_window: ui.GameMemoryWindow,
@@ -26,6 +27,7 @@ pub const Ui = struct {
             .is_first_draw = true,
             .is_open = false,
             .main_window = .{},
+            .tai_window = .{},
             .settings_window = .init(allocator),
             .logs_window = .{},
             .game_memory_window = .{},
@@ -54,6 +56,7 @@ pub const Ui = struct {
         settings_maybe: ?*model.Settings,
         game_memory_maybe: ?*const game.Memory(build_info.game),
         controller: *core.Controller,
+        tai: *core.ToolAssistedInput,
         latest_version: ui.LatestVersion,
         memory_usage: usize,
     ) void {
@@ -106,6 +109,7 @@ pub const Ui = struct {
             latest_version,
             memory_usage,
         );
+        self.tai_window.draw(controller, tai);
         self.settings_window.draw(base_dir, settings);
         self.logs_window.draw(dll.buffer_logger);
         self.game_memory_window.draw(build_info.game, game_memory);

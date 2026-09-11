@@ -233,6 +233,7 @@ pub const EventBuss = struct {
             settings_maybe,
             game_memory_maybe,
             &self.core.controller,
+            &self.core.tool_assisted_input,
             latest_version,
             memory_usage,
         );
