@@ -25,6 +25,7 @@ pub const drawMessageWindow = @import("message_window.zig").drawMessageWindow;
 pub const NavigationLayout = @import("navigation_layout.zig").NavigationLayout;
 pub const QuadrantLayout = @import("quadrant_layout.zig").QuadrantLayout;
 pub const drawStage = @import("stage.zig").drawStage;
+pub const TaiEditor = @import("tai_editor.zig").TaiEditor;
 pub const TaiTable = @import("tai_table.zig").TaiTable;
 pub const TaiWindow = @import("tai_window.zig").TaiWindow;
 pub const Shapes = @import("shapes.zig").Shapes;

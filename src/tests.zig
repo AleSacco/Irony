@@ -140,6 +140,7 @@ test {
     _ = @import("dll/ui/shapes.zig");
     _ = @import("dll/ui/skeletons.zig");
     _ = @import("dll/ui/stage.zig");
+    _ = @import("dll/ui/tai_editor.zig");
     _ = @import("dll/ui/tai_table.zig");
     _ = @import("dll/ui/tai_window.zig");
     _ = @import("dll/ui/ui.zig");
