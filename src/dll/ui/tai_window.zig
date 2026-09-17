@@ -5,14 +5,27 @@ const core = @import("../core/root.zig");
 const ui = @import("root.zig");
 
 pub const TaiWindow = struct {
-    is_open: bool = false,
-    table: ui.TaiTable = .{},
-    enable_player_1: bool = true,
-    enable_player_2: bool = true,
+    is_open: bool,
+    table: ui.TaiTable,
+    enable_player_1: bool,
+    enable_player_2: bool,
 
     const Self = @This();
 
     pub const name = "Tool Assisted Input";
+
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return .{
+            .is_open = false,
+            .table = .init(allocator),
+            .enable_player_1 = true,
+            .enable_player_2 = true,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.table.deinit();
+    }
 
     pub fn draw(self: *Self, controller: *core.Controller, tai: *core.ToolAssistedInput) void {
         if (!self.is_open) {
@@ -25,7 +38,7 @@ pub const TaiWindow = struct {
         }
 
         if (imgui.igBeginChild_Str("table", .{}, 0, imgui.ImGuiWindowFlags_NoMove)) {
-            self.table.draw(controller, tai, &self.enable_player_1, &self.enable_player_2);
+            self.table.draw(tai, controller, &self.enable_player_1, &self.enable_player_2);
         }
         imgui.igEndChild();
     }

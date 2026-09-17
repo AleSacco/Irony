@@ -27,7 +27,7 @@ pub const Ui = struct {
             .is_first_draw = true,
             .is_open = false,
             .main_window = .{},
-            .tai_window = .{},
+            .tai_window = .init(allocator),
             .settings_window = .init(allocator),
             .logs_window = .{},
             .game_memory_window = .{},
@@ -38,6 +38,7 @@ pub const Ui = struct {
 
     pub fn deinit(self: *Self) void {
         self.settings_window.deinit();
+        self.tai_window.deinit();
     }
 
     pub fn processFrame(self: *Self, settings: *const model.Settings, frame: *const model.Frame) void {

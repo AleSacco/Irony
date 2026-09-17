@@ -3,24 +3,15 @@ const imgui = @import("imgui");
 const sdk = @import("../../sdk/root.zig");
 const model = @import("../model/root.zig");
 const core = @import("../core/root.zig");
+const ui = @import("root.zig");
 
 const input_text_buffer_size = 32;
 
 pub const TaiTable = struct {
-    selection: ?Selection = null,
-    state: State = .idle,
+    editor: ui.TaiEditor,
+    state: State,
 
     const Self = @This();
-    const Selection = struct {
-        start: Cell,
-        end: Cell,
-        active: Cell,
-
-        pub const Cell = struct {
-            player_id: model.PlayerId,
-            index: usize,
-        };
-    };
     const State = union(enum) {
         idle: void,
         confirming: Confirming,
@@ -35,31 +26,23 @@ pub const TaiTable = struct {
             index: usize,
         };
     };
-    const Action = union(enum) {
-        none: void,
-        import: void,
-        clear: void,
-        swap: void,
-        move: Move,
-        insert: Insert,
-        delete: Delete,
+    const Items = []const core.ToolAssistedInput.SequenceItem;
 
-        pub const Move = struct {
-            source_index: usize,
-            destination_index: usize,
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return .{
+            .editor = .init(allocator),
+            .state = .idle,
         };
-        pub const Insert = struct {
-            index: usize,
-        };
-        pub const Delete = struct {
-            index: usize,
-        };
-    };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.editor.deinit();
+    }
 
     pub fn draw(
         self: *Self,
-        controller: *core.Controller,
         tai: *core.ToolAssistedInput,
+        controller: *const core.Controller,
         enable_player_1: *bool,
         enable_player_2: *bool,
     ) void {
@@ -70,18 +53,18 @@ pub const TaiTable = struct {
         }
         defer imgui.igEndTable();
 
+        const items: Items = tai.sequence.items;
+
         imgui.igTableSetupScrollFreeze(0, 1);
         imgui.igTableSetupColumn("move", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
         imgui.igTableSetupColumn("player_1", imgui.ImGuiTableColumnFlags_WidthStretch, 0, 0);
         imgui.igTableSetupColumn("player_2", imgui.ImGuiTableColumnFlags_WidthStretch, 0, 0);
         imgui.igTableSetupColumn("buttons", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
 
-        var action: Action = .none;
-
-        drawMoveHeader(&action, tai);
+        self.drawMoveHeader(items);
         drawPlayerHeader(enable_player_1, .player_1);
         drawPlayerHeader(enable_player_2, .player_2);
-        drawButtonsHeader(&self.state, &action, controller, tai);
+        self.drawButtonsHeader(tai, controller);
 
         const number_of_rows = std.math.lossyCast(c_int, tai.sequence.items.len +| 1);
         var clipper = imgui.ImGuiListClipper{};
@@ -95,26 +78,24 @@ pub const TaiTable = struct {
                 imgui.igTableNextRow(0, 0);
 
                 const index = std.math.cast(usize, c_index) orelse break;
-                if (c_index < number_of_rows - 1) {
-                    drawMoveCell(&self.state, index);
-                    drawPlayerCell(&action, .player_1, index, &self.selection, tai);
-                    drawPlayerCell(&action, .player_2, index, &self.selection, tai);
-                    drawButtonsCell(&action, index, true);
-                } else {
-                    _ = imgui.igTableNextColumn();
-                    _ = imgui.igTableNextColumn();
-                    _ = imgui.igTableNextColumn();
-                    drawButtonsCell(&action, index, false);
-                }
+                self.drawMoveCell(index, items);
+                self.drawPlayerCell(.player_1, index, items);
+                self.drawPlayerCell(.player_2, index, items);
+                self.drawButtonsCell(index, items);
             }
         }
 
-        handleSelectLogic(&self.state, &self.selection, tai.sequence.items.len);
-        handleMoveLogic(&self.state, &action, &clipper);
-        executeAction(&action, controller, tai);
+        self.handleSelectLogic();
+        self.handleMoveLogic(&clipper);
+
+        self.editor.commit(tai) catch |err| {
+            sdk.misc.error_context.append("Failed to commit tool assisted input change.", .{});
+            sdk.misc.error_context.logError(err);
+            self.editor.discardUncommitted();
+        };
     }
 
-    fn drawMoveHeader(action: *Action, tai: *const core.ToolAssistedInput) void {
+    fn drawMoveHeader(self: *Self, items: Items) void {
         if (!imgui.igTableNextColumn()) {
             return;
         }
@@ -125,9 +106,16 @@ pub const TaiTable = struct {
         imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
         defer imgui.igPopStyleVar(1);
 
-        imgui.igBeginDisabled(tai.sequence.items.len == 0);
+        imgui.igBeginDisabled(items.len == 0);
         if (imgui.igButton(" ⇄ ###swap", .{})) {
-            action.* = .swap;
+            self.editor.select(&.{
+                .start = .{ .index = 0, .player_id = .player_1 },
+                .end = .{ .index = items.len - 1, .player_id = .player_2 },
+            });
+            self.editor.swapSides() catch |err| {
+                sdk.misc.error_context.append("Failed to swap player inputs.", .{});
+                sdk.misc.error_context.logError(err);
+            };
         }
         imgui.igEndDisabled();
         if (imgui.igIsItemHovered(0)) {
@@ -136,171 +124,6 @@ pub const TaiTable = struct {
 
         imgui.igSameLine(0, 0);
         imgui.igTableHeader("");
-    }
-
-    fn drawMoveCell(state: *State, index: usize) void {
-        if (!imgui.igTableNextColumn()) {
-            return;
-        }
-
-        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
-        defer imgui.igPopStyleVar(1);
-
-        const is_being_moved = state.* == .moving and state.moving.index == index;
-        if (is_being_moved) {
-            const active_color = imgui.igGetStyleColorVec4(imgui.ImGuiCol_ButtonActive).*;
-            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_Button, active_color);
-            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_ButtonHovered, active_color);
-        }
-        defer if (is_being_moved) {
-            imgui.igPopStyleColor(2);
-        };
-
-        _ = imgui.igButton(" ⋯ ###move", .{});
-        if (imgui.igIsItemActivated()) {
-            state.* = .{ .moving = .{ .index = index } };
-        }
-        if (imgui.igIsItemHovered(0)) {
-            imgui.igSetTooltip("Move Row");
-        }
-    }
-
-    fn drawButtonsHeader(
-        state: *State,
-        action: *Action,
-        controller: *const core.Controller,
-        tai: *const core.ToolAssistedInput,
-    ) void {
-        if (!imgui.igTableNextColumn()) {
-            return;
-        }
-
-        imgui.igPushID_Str("buttons_2");
-        defer imgui.igPopID();
-
-        const is_import_confirm_open = state.* == .confirming and state.confirming == .import;
-        var next_import_confirm_open = is_import_confirm_open;
-        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
-        imgui.igBeginDisabled(controller.getTotalFrames() == 0);
-        if (imgui.igButton(" → ###import", .{})) {
-            if (tai.sequence.items.len == 0) {
-                action.* = .import;
-            } else {
-                next_import_confirm_open = true;
-            }
-        }
-        imgui.igEndDisabled();
-        imgui.igPopStyleVar(1);
-        if (imgui.igIsItemHovered(0)) {
-            imgui.igSetTooltip("Import Recorded Inputs");
-        }
-        if (next_import_confirm_open) {
-            imgui.igOpenPopup_Str("Import inputs from the recording?", 0);
-        }
-        if (imgui.igBeginPopupModal(
-            "Import inputs from the recording?",
-            &next_import_confirm_open,
-            imgui.ImGuiWindowFlags_AlwaysAutoResize,
-        )) {
-            defer imgui.igEndPopup();
-            imgui.igText("Are you sure you want to import inputs from the recording?");
-            imgui.igText("This will override all existing input values currently in the table.");
-            imgui.igSeparator();
-            if (imgui.igButton("Import", .{})) {
-                action.* = .import;
-                imgui.igCloseCurrentPopup();
-                next_import_confirm_open = false;
-            }
-            imgui.igSameLine(0, -1);
-            imgui.igSetItemDefaultFocus();
-            if (imgui.igButton("Cancel", .{})) {
-                imgui.igCloseCurrentPopup();
-                next_import_confirm_open = false;
-            }
-        }
-        if (is_import_confirm_open != next_import_confirm_open) {
-            switch (next_import_confirm_open) {
-                false => state.* = .idle,
-                true => state.* = .{ .confirming = .import },
-            }
-        }
-
-        imgui.igSameLine(0, imgui.igGetStyle().*.ItemInnerSpacing.x);
-
-        const is_clear_confirm_open = state.* == .confirming and state.confirming == .clear;
-        var next_clear_confirm_open = is_clear_confirm_open;
-        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
-        imgui.igBeginDisabled(tai.sequence.items.len == 0);
-        if (imgui.igButton(" 🗑 ###clear", .{})) {
-            next_clear_confirm_open = true;
-        }
-        imgui.igEndDisabled();
-        imgui.igPopStyleVar(1);
-        if (imgui.igIsItemHovered(0)) {
-            imgui.igSetTooltip("Clear Table");
-        }
-        if (next_clear_confirm_open) {
-            imgui.igOpenPopup_Str("Clear all inputs from the table?", 0);
-        }
-        if (imgui.igBeginPopupModal(
-            "Clear all inputs from the table?",
-            &next_clear_confirm_open,
-            imgui.ImGuiWindowFlags_AlwaysAutoResize,
-        )) {
-            defer imgui.igEndPopup();
-            imgui.igText("Are you sure you want to clear all inputs from the table?");
-            imgui.igText("This will delete all table rows.");
-            imgui.igSeparator();
-            if (imgui.igButton("Clear", .{})) {
-                action.* = .clear;
-                imgui.igCloseCurrentPopup();
-                next_clear_confirm_open = false;
-            }
-            imgui.igSameLine(0, -1);
-            imgui.igSetItemDefaultFocus();
-            if (imgui.igButton("Cancel", .{})) {
-                imgui.igCloseCurrentPopup();
-                next_clear_confirm_open = false;
-            }
-        }
-        if (is_clear_confirm_open != next_clear_confirm_open) {
-            switch (next_clear_confirm_open) {
-                false => state.* = .idle,
-                true => state.* = .{ .confirming = .clear },
-            }
-        }
-
-        imgui.igSameLine(0, 0);
-        imgui.igTableHeader("");
-    }
-
-    fn drawButtonsCell(action: *Action, index: usize, show_delete: bool) void {
-        if (!imgui.igTableNextColumn()) {
-            return;
-        }
-
-        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
-        defer imgui.igPopStyleVar(1);
-
-        if (imgui.igButton(" ➕ ###insert", .{})) {
-            action.* = .{ .insert = .{ .index = index } };
-        }
-        if (imgui.igIsItemHovered(0)) {
-            imgui.igSetTooltip("Insert Row");
-        }
-
-        if (!show_delete) {
-            return;
-        }
-
-        imgui.igSameLine(0, imgui.igGetStyle().*.ItemInnerSpacing.x);
-
-        if (imgui.igButton(" ❎ ###delete", .{})) {
-            action.* = .{ .delete = .{ .index = index } };
-        }
-        if (imgui.igIsItemHovered(0)) {
-            imgui.igSetTooltip("Delete Row");
-        }
     }
 
     fn drawPlayerHeader(enabled: *bool, player_id: model.PlayerId) void {
@@ -337,13 +160,147 @@ pub const TaiTable = struct {
         imgui.igTableHeader(label);
     }
 
-    fn drawPlayerCell(
-        action: *Action,
-        player_id: model.PlayerId,
-        index: usize,
-        selection: *const ?Selection,
-        tai: *const core.ToolAssistedInput,
-    ) void {
+    fn drawButtonsHeader(self: *Self, tai: *core.ToolAssistedInput, controller: *const core.Controller) void {
+        if (!imgui.igTableNextColumn()) {
+            return;
+        }
+
+        imgui.igPushID_Str("buttons_2");
+        defer imgui.igPopID();
+
+        const is_import_confirm_open = self.state == .confirming and self.state.confirming == .import;
+        var next_import_confirm_open = is_import_confirm_open;
+        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
+        imgui.igBeginDisabled(controller.getTotalFrames() == 0);
+        if (imgui.igButton(" → ###import", .{})) {
+            if (tai.sequence.items.len == 0) {
+                self.editor.importFromRecording(tai, controller) catch |err| {
+                    sdk.misc.error_context.append("Failed to import tool assisted inputs from recording.", .{});
+                    sdk.misc.error_context.logError(err);
+                };
+            } else {
+                next_import_confirm_open = true;
+            }
+        }
+        imgui.igEndDisabled();
+        imgui.igPopStyleVar(1);
+        if (imgui.igIsItemHovered(0)) {
+            imgui.igSetTooltip("Import Recorded Inputs");
+        }
+        if (next_import_confirm_open) {
+            imgui.igOpenPopup_Str("Import inputs from the recording?", 0);
+        }
+        if (imgui.igBeginPopupModal(
+            "Import inputs from the recording?",
+            &next_import_confirm_open,
+            imgui.ImGuiWindowFlags_AlwaysAutoResize,
+        )) {
+            defer imgui.igEndPopup();
+            imgui.igText("Are you sure you want to import inputs from the recording?");
+            imgui.igText("This will override all existing input values and can not be undone.");
+            imgui.igSeparator();
+            if (imgui.igButton("Import", .{})) {
+                self.editor.importFromRecording(tai, controller) catch |err| {
+                    sdk.misc.error_context.append("Failed to import tool assisted inputs from recording.", .{});
+                    sdk.misc.error_context.logError(err);
+                };
+                imgui.igCloseCurrentPopup();
+                next_import_confirm_open = false;
+            }
+            imgui.igSameLine(0, -1);
+            imgui.igSetItemDefaultFocus();
+            if (imgui.igButton("Cancel", .{})) {
+                imgui.igCloseCurrentPopup();
+                next_import_confirm_open = false;
+            }
+        }
+        if (is_import_confirm_open != next_import_confirm_open) {
+            switch (next_import_confirm_open) {
+                false => self.state = .idle,
+                true => self.state = .{ .confirming = .import },
+            }
+        }
+
+        imgui.igSameLine(0, imgui.igGetStyle().*.ItemInnerSpacing.x);
+
+        const is_clear_confirm_open = self.state == .confirming and self.state.confirming == .clear;
+        var next_clear_confirm_open = is_clear_confirm_open;
+        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
+        imgui.igBeginDisabled(tai.sequence.items.len == 0);
+        if (imgui.igButton(" 🗑 ###clear", .{})) {
+            next_clear_confirm_open = true;
+        }
+        imgui.igEndDisabled();
+        imgui.igPopStyleVar(1);
+        if (imgui.igIsItemHovered(0)) {
+            imgui.igSetTooltip("Clear Table");
+        }
+        if (next_clear_confirm_open) {
+            imgui.igOpenPopup_Str("Clear all inputs from the table?", 0);
+        }
+        if (imgui.igBeginPopupModal(
+            "Clear all inputs from the table?",
+            &next_clear_confirm_open,
+            imgui.ImGuiWindowFlags_AlwaysAutoResize,
+        )) {
+            defer imgui.igEndPopup();
+            imgui.igText("Are you sure you want to clear all inputs from the table?");
+            imgui.igText("This will delete all table rows and can not be undone.");
+            imgui.igSeparator();
+            if (imgui.igButton("Clear", .{})) {
+                self.editor.clear(tai);
+                imgui.igCloseCurrentPopup();
+                next_clear_confirm_open = false;
+            }
+            imgui.igSameLine(0, -1);
+            imgui.igSetItemDefaultFocus();
+            if (imgui.igButton("Cancel", .{})) {
+                imgui.igCloseCurrentPopup();
+                next_clear_confirm_open = false;
+            }
+        }
+        if (is_clear_confirm_open != next_clear_confirm_open) {
+            switch (next_clear_confirm_open) {
+                false => self.state = .idle,
+                true => self.state = .{ .confirming = .clear },
+            }
+        }
+
+        imgui.igSameLine(0, 0);
+        imgui.igTableHeader("");
+    }
+
+    fn drawMoveCell(self: *Self, index: usize, items: Items) void {
+        if (!imgui.igTableNextColumn()) {
+            return;
+        }
+        if (index >= items.len) {
+            return;
+        }
+
+        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
+        defer imgui.igPopStyleVar(1);
+
+        const is_being_moved = self.state == .moving and self.state.moving.index == index;
+        if (is_being_moved) {
+            const active_color = imgui.igGetStyleColorVec4(imgui.ImGuiCol_ButtonActive).*;
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_Button, active_color);
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_ButtonHovered, active_color);
+        }
+        defer if (is_being_moved) {
+            imgui.igPopStyleColor(2);
+        };
+
+        _ = imgui.igButton(" ⋯ ###move", .{});
+        if (imgui.igIsItemActivated()) {
+            // TODO
+        }
+        if (imgui.igIsItemHovered(0)) {
+            imgui.igSetTooltip("Move Row");
+        }
+    }
+
+    fn drawPlayerCell(self: *Self, player_id: model.PlayerId, index: usize, items: Items) void {
         if (!imgui.igTableNextColumn()) {
             return;
         }
@@ -353,59 +310,81 @@ pub const TaiTable = struct {
         });
         defer imgui.igPopID();
 
-        const CellType = enum { normal, selected, active };
-        const cell_type: CellType = block: {
-            const s = if (selection.*) |*s| s else break :block .normal;
-            if (player_id == s.active.player_id and index == s.active.index) {
-                break :block .active;
-            }
+        const is_selected = block: {
+            const s = &self.editor.selection;
             if (index < @min(s.start.index, s.end.index) or index > @max(s.start.index, s.end.index)) {
-                break :block .normal;
+                break :block false;
             }
             if (player_id != s.start.player_id and player_id != s.end.player_id) {
-                break :block .normal;
+                break :block false;
             }
-            break :block .selected;
+            break :block true;
         };
-        switch (cell_type) {
-            .normal => {},
-            .selected => {
-                const color = imgui.igGetStyle().*.Colors[imgui.ImGuiCol_HeaderHovered];
-                const color_u32 = imgui.igGetColorU32_Vec4(color);
-                imgui.igTableSetBgColor(imgui.ImGuiTableBgTarget_CellBg, color_u32, -1);
-            },
-            .active => {
-                const color = imgui.igGetStyle().*.Colors[imgui.ImGuiCol_HeaderActive];
-                const color_u32 = imgui.igGetColorU32_Vec4(color);
-                imgui.igTableSetBgColor(imgui.ImGuiTableBgTarget_CellBg, color_u32, -1);
-            },
+        if (is_selected) {
+            const color = imgui.igGetStyle().*.Colors[imgui.ImGuiCol_HeaderHovered];
+            const color_u32 = imgui.igGetColorU32_Vec4(color);
+            imgui.igTableSetBgColor(imgui.ImGuiTableBgTarget_CellBg, color_u32, -1);
         }
 
-        const item = &tai.sequence.items[index];
+        if (index >= items.len) {
+            return;
+        }
         const input = switch (player_id) {
-            .player_1 => item.player_1,
-            .player_2 => item.player_2,
+            .player_1 => items[index].player_1,
+            .player_2 => items[index].player_2,
         };
         var buffer: [input_text_buffer_size]u8 = undefined;
         const input_text = writeInputText(&buffer, input);
         imgui.igText("%s", input_text.ptr);
-        _ = action;
     }
 
-    fn handleSelectLogic(state: *State, selection: *?Selection, number_of_rows: usize) void {
-        if (selection.*) |*s| {
-            if (number_of_rows == 0) {
-                selection.* = null;
-            } else {
-                s.start.index = @min(s.start.index, number_of_rows - 1);
-                s.end.index = @min(s.end.index, number_of_rows - 1);
-                s.active.index = @min(s.active.index, number_of_rows - 1);
-            }
+    fn drawButtonsCell(self: *Self, index: usize, items: Items) void {
+        if (!imgui.igTableNextColumn()) {
+            return;
         }
 
+        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
+        defer imgui.igPopStyleVar(1);
+
+        if (imgui.igButton(" ➕ ###insert", .{})) {
+            self.editor.select(&.{
+                .start = .{ .index = index, .player_id = .player_1 },
+                .end = .{ .index = index, .player_id = .player_2 },
+            });
+            self.editor.insertRows() catch |err| {
+                sdk.misc.error_context.append("Failed to insert row.", .{});
+                sdk.misc.error_context.logError(err);
+            };
+        }
+        if (imgui.igIsItemHovered(0)) {
+            imgui.igSetTooltip("Insert Row");
+        }
+
+        if (index >= items.len) {
+            return;
+        }
+
+        imgui.igSameLine(0, imgui.igGetStyle().*.ItemInnerSpacing.x);
+
+        if (imgui.igButton(" ❎ ###delete", .{})) {
+            self.editor.select(&.{
+                .start = .{ .index = index, .player_id = .player_1 },
+                .end = .{ .index = index, .player_id = .player_2 },
+            });
+            self.editor.deleteRows() catch |err| {
+                sdk.misc.error_context.append("Failed to delete row.", .{});
+                sdk.misc.error_context.logError(err);
+            };
+        }
+        if (imgui.igIsItemHovered(0)) {
+            imgui.igSetTooltip("Delete Row");
+        }
+    }
+
+    fn handleSelectLogic(self: *Self) void {
         if (!imgui.igIsMouseDown_Nil(imgui.ImGuiMouseButton_Left)) {
-            if (state.* == .selecting) {
-                state.* = .idle;
+            if (self.state == .selecting) {
+                self.state = .idle;
             }
             return;
         }
@@ -416,26 +395,26 @@ pub const TaiTable = struct {
             else => return,
         };
         const index = std.math.cast(usize, imgui.igTableGetHoveredRow() -| 1) orelse return;
-        if (index >= number_of_rows) {
-            return;
-        }
 
         if (imgui.igIsMouseClicked_Bool(imgui.ImGuiMouseButton_Left, false)) {
-            state.* = .selecting;
-            const cell = Selection.Cell{ .player_id = player_id, .index = index };
-            selection.* = .{ .start = cell, .end = cell, .active = cell };
-        } else if (state.* == .selecting and selection.* != null) {
-            selection.*.?.end = .{ .player_id = player_id, .index = index };
+            self.state = .selecting;
+            const cell = ui.TaiEditor.Selection.Cell{ .player_id = player_id, .index = index };
+            self.editor.select(&.{ .start = cell, .end = cell });
+        } else if (self.state == .selecting) {
+            self.editor.select(&.{
+                .start = self.editor.selection.start,
+                .end = .{ .player_id = player_id, .index = index },
+            });
         }
     }
 
-    fn handleMoveLogic(state: *State, action: *Action, clipper: *const imgui.ImGuiListClipper) void {
-        const source_index = switch (state.*) {
+    fn handleMoveLogic(self: *Self, clipper: *const imgui.ImGuiListClipper) void {
+        const source_index = switch (self.state) {
             .moving => |*moving| moving.index,
             else => return,
         };
         if (!imgui.igIsMouseDown_Nil(imgui.ImGuiMouseButton_Left)) {
-            state.* = .idle;
+            self.state = .idle;
             return;
         }
         if (clipper.ItemsHeight <= 0) {
@@ -452,85 +431,7 @@ pub const TaiTable = struct {
         if (source_index == destination_index) {
             return;
         }
-        state.* = .{ .moving = .{ .index = destination_index } };
-        action.* = .{ .move = .{ .source_index = source_index, .destination_index = destination_index } };
-    }
-
-    fn executeAction(
-        action: *const Action,
-        controller: *const core.Controller,
-        tai: *core.ToolAssistedInput,
-    ) void {
-        switch (action.*) {
-            .none => {},
-            .import => {
-                const total_frames = controller.getTotalFrames();
-                tai.sequence.clearAndFree(tai.allocator);
-                tai.sequence.ensureTotalCapacity(tai.allocator, total_frames) catch |err| {
-                    sdk.misc.error_context.append("Failed to import tool assisted input table from the recording.", .{});
-                    sdk.misc.error_context.logError(err);
-                };
-                for (0..total_frames) |index| {
-                    const frame = controller.getFrameAt(index) orelse break;
-                    tai.sequence.appendAssumeCapacity(.{
-                        .player_1 = frame.getPlayerById(.player_1).input orelse .{},
-                        .player_2 = frame.getPlayerById(.player_2).input orelse .{},
-                    });
-                }
-            },
-            .clear => {
-                tai.sequence.clearAndFree(tai.allocator);
-            },
-            .swap => {
-                for (tai.sequence.items) |*item| {
-                    const temp = item.player_1;
-                    item.player_1 = item.player_2;
-                    item.player_2 = temp;
-                }
-            },
-            .move => |*move| {
-                if (tai.sequence.items.len == 0) {
-                    return;
-                }
-                const source_index = @min(move.source_index, tai.sequence.items.len - 1);
-                const destination_index = @min(move.destination_index, tai.sequence.items.len - 1);
-                const source_value = tai.sequence.items[source_index];
-                if (destination_index > source_index) {
-                    std.mem.copyBackwards(
-                        core.ToolAssistedInput.SequenceItem,
-                        tai.sequence.items[source_index..destination_index],
-                        tai.sequence.items[(source_index + 1)..(destination_index + 1)],
-                    );
-                } else if (destination_index < source_index) {
-                    std.mem.copyForwards(
-                        core.ToolAssistedInput.SequenceItem,
-                        tai.sequence.items[(destination_index + 1)..(source_index + 1)],
-                        tai.sequence.items[destination_index..source_index],
-                    );
-                } else {
-                    return;
-                }
-                tai.sequence.items[destination_index] = source_value;
-            },
-            .insert => |*insert| {
-                if (insert.index >= tai.sequence.items.len +| 1) {
-                    return;
-                }
-                tai.sequence.insert(tai.allocator, insert.index, .{}) catch |err| {
-                    sdk.misc.error_context.append(
-                        "Failed to insert tool assisted input row at index: {}",
-                        .{insert.index},
-                    );
-                    sdk.misc.error_context.logError(err);
-                };
-            },
-            .delete => |*delete| {
-                if (delete.index >= tai.sequence.items.len) {
-                    return;
-                }
-                _ = tai.sequence.orderedRemove(delete.index);
-            },
-        }
+        // TODO
     }
 };
 
