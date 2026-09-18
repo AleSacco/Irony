@@ -45,7 +45,7 @@ pub const TaiTable = struct {
         enable_player_2: *bool,
     ) void {
         const table_flags = imgui.ImGuiTableFlags_ScrollY | imgui.ImGuiTableFlags_RowBg | imgui.ImGuiTableFlags_Borders;
-        const is_rendered = imgui.igBeginTable("sequence", 5, table_flags, .{}, 0);
+        const is_rendered = imgui.igBeginTable("sequence", 7, table_flags, .{}, 0);
         if (!is_rendered) {
             return;
         }
@@ -55,15 +55,19 @@ pub const TaiTable = struct {
 
         imgui.igTableSetupScrollFreeze(0, 1);
         imgui.igTableSetupColumn("move", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
-        imgui.igTableSetupColumn("player_1", imgui.ImGuiTableColumnFlags_WidthStretch, 0, 0);
+        imgui.igTableSetupColumn("player_1_input", imgui.ImGuiTableColumnFlags_WidthStretch, 0, 0);
+        imgui.igTableSetupColumn("player_1_animation_frame", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
         imgui.igTableSetupColumn("swap", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
-        imgui.igTableSetupColumn("player_2", imgui.ImGuiTableColumnFlags_WidthStretch, 0, 0);
+        imgui.igTableSetupColumn("player_2_animation_frame", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
+        imgui.igTableSetupColumn("player_2_input", imgui.ImGuiTableColumnFlags_WidthStretch, 0, 0);
         imgui.igTableSetupColumn("buttons", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
 
-        self.drawMoveHeader(tai);
-        drawPlayerHeader(enable_player_1, .player_1);
+        drawMoveHeader();
+        drawInputHeader(enable_player_1, .player_1);
+        self.drawAnimationFrameHeader(.player_1, tai);
         self.drawSwapHeader(items);
-        drawPlayerHeader(enable_player_2, .player_2);
+        self.drawAnimationFrameHeader(.player_2, tai);
+        drawInputHeader(enable_player_2, .player_2);
         self.drawButtonsHeader(tai, controller);
 
         const number_of_rows = std.math.lossyCast(c_int, tai.sequence.items.len +| 1);
@@ -79,9 +83,11 @@ pub const TaiTable = struct {
 
                 const index = std.math.cast(usize, c_index) orelse break;
                 self.drawMoveCell(index, items);
-                self.drawPlayerCell(.player_1, index, items, controller);
+                self.drawInputCell(.player_1, index, items, controller);
+                drawAnimationFrameCell(.player_1, index, items, controller);
                 self.drawSwapCell(index, items);
-                self.drawPlayerCell(.player_2, index, items, controller);
+                drawAnimationFrameCell(.player_2, index, items, controller);
+                self.drawInputCell(.player_2, index, items, controller);
                 self.drawButtonsCell(index, items);
             }
         }
@@ -96,7 +102,7 @@ pub const TaiTable = struct {
         };
     }
 
-    fn drawMoveHeader(self: *Self, tai: *core.ToolAssistedInput) void {
+    fn drawMoveHeader() void {
         if (!imgui.igTableNextColumn()) {
             return;
         }
@@ -107,16 +113,11 @@ pub const TaiTable = struct {
         imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
         defer imgui.igPopStyleVar(1);
 
-        imgui.igBeginDisabled(!self.editor.canUndo());
-        if (imgui.igButton(" ↶ ###undo", .{})) {
-            self.editor.undo(tai) catch |err| {
-                sdk.misc.error_context.append("Failed to undo.", .{});
-                sdk.misc.error_context.logError(err);
-            };
+        if (imgui.igButton(" ≡ ###swap", .{})) {
+            // TODO
         }
-        imgui.igEndDisabled();
         if (imgui.igIsItemHovered(0)) {
-            imgui.igSetTooltip("Undo");
+            imgui.igSetTooltip("Menu");
         }
 
         imgui.igSameLine(0, 0);
@@ -264,15 +265,15 @@ pub const TaiTable = struct {
         imgui.igTableHeader("");
     }
 
-    fn drawPlayerHeader(enabled: *bool, player_id: model.PlayerId) void {
+    fn drawInputHeader(enabled: *bool, player_id: model.PlayerId) void {
         if (!imgui.igTableNextColumn()) {
             return;
         }
-        const label = switch (player_id) {
-            .player_1 => "Player 1",
-            .player_2 => "Player 2",
-        };
-        imgui.igPushID_Str(label);
+
+        imgui.igPushID_Str(switch (player_id) {
+            .player_1 => "player_1_input",
+            .player_2 => "player_2_input",
+        });
         defer imgui.igPopID();
 
         imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
@@ -295,7 +296,57 @@ pub const TaiTable = struct {
 
         imgui.igSameLine(0, imgui.igGetStyle().*.ItemInnerSpacing.x);
 
-        imgui.igTableHeader(label);
+        imgui.igTableHeader(switch (player_id) {
+            .player_1 => "Player 1",
+            .player_2 => "Player 2",
+        });
+    }
+
+    fn drawAnimationFrameHeader(self: *Self, player_id: model.PlayerId, tai: *core.ToolAssistedInput) void {
+        if (!imgui.igTableNextColumn()) {
+            return;
+        }
+
+        imgui.igPushID_Str(switch (player_id) {
+            .player_1 => "player_1_input",
+            .player_2 => "player_2_input",
+        });
+        defer imgui.igPopID();
+
+        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
+        defer imgui.igPopStyleVar(1);
+
+        switch (player_id) {
+            .player_1 => {
+                imgui.igBeginDisabled(!self.editor.canUndo());
+                if (imgui.igButton(" ↶ ###undo", .{})) {
+                    self.editor.undo(tai) catch |err| {
+                        sdk.misc.error_context.append("Failed to undo.", .{});
+                        sdk.misc.error_context.logError(err);
+                    };
+                }
+                imgui.igEndDisabled();
+                if (imgui.igIsItemHovered(0)) {
+                    imgui.igSetTooltip("Undo");
+                }
+            },
+            .player_2 => {
+                imgui.igBeginDisabled(!self.editor.canRedo());
+                if (imgui.igButton(" ↷ ###redo", .{})) {
+                    self.editor.redo(tai) catch |err| {
+                        sdk.misc.error_context.append("Failed to redo.", .{});
+                        sdk.misc.error_context.logError(err);
+                    };
+                }
+                imgui.igEndDisabled();
+                if (imgui.igIsItemHovered(0)) {
+                    imgui.igSetTooltip("Redo");
+                }
+            },
+        }
+
+        imgui.igSameLine(0, 0);
+        imgui.igTableHeader("");
     }
 
     fn drawMoveCell(self: *Self, index: usize, items: Items) void {
@@ -382,7 +433,7 @@ pub const TaiTable = struct {
 
         imgui.igSameLine(0, imgui.igGetStyle().*.ItemInnerSpacing.x);
 
-        if (imgui.igButton(" ❎ ###delete", .{})) {
+        if (imgui.igButton(" ⌫ ###delete", .{})) {
             self.editor.selection = .{
                 .start = .{ .index = index, .player_id = .player_1 },
                 .end = .{ .index = index, .player_id = .player_2 },
@@ -397,7 +448,7 @@ pub const TaiTable = struct {
         }
     }
 
-    fn drawPlayerCell(
+    fn drawInputCell(
         self: *Self,
         player_id: model.PlayerId,
         index: usize,
@@ -408,8 +459,8 @@ pub const TaiTable = struct {
             return;
         }
         imgui.igPushID_Str(switch (player_id) {
-            .player_1 => "player_1",
-            .player_2 => "player_2",
+            .player_1 => "player_1_input",
+            .player_2 => "player_2_input",
         });
         defer imgui.igPopID();
 
@@ -466,6 +517,97 @@ pub const TaiTable = struct {
         }
     }
 
+    fn drawAnimationFrameCell(
+        player_id: model.PlayerId,
+        index: usize,
+        items: Items,
+        controller: *const core.Controller,
+    ) void {
+        if (!imgui.igTableNextColumn()) {
+            return;
+        }
+        imgui.igPushID_Str(switch (player_id) {
+            .player_1 => "player_1_animation_frame",
+            .player_2 => "player_2_animation_frame",
+        });
+        defer imgui.igPopID();
+
+        if (index >= items.len) {
+            return;
+        }
+
+        const frame = controller.getFrameAt(index) orelse return;
+        const player: *const model.Player = frame.getPlayerById(player_id);
+
+        if (player.move_phase) |move_phase| {
+            const color: imgui.ImVec4 = switch (move_phase) {
+                .neutral => .{ .x = 0.1, .y = 0.2, .z = 0.1, .w = 1 },
+                .start_up => .{ .x = 0.2, .y = 0.1, .z = 0.1, .w = 1 },
+                .active => .{ .x = 0.2, .y = 0.2, .z = 0, .w = 1 },
+                .active_recovery, .recovery => .{ .x = 0.1, .y = 0.2, .z = 0.2, .w = 1 },
+            };
+            const color_u32 = imgui.igGetColorU32_Vec4(color);
+            imgui.igTableSetBgColor(imgui.ImGuiTableBgTarget_CellBg, color_u32, -1);
+        }
+
+        if (player.animation_frame) |animation_frame| {
+            var buffer: [16]u8 = undefined;
+            const text = std.fmt.bufPrintZ(&buffer, "{}", .{animation_frame}) catch "error";
+            var text_size: imgui.ImVec2 = undefined;
+            imgui.igCalcTextSize(&text_size, text, null, false, -1);
+            var available_size: imgui.ImVec2 = undefined;
+            imgui.igGetContentRegionAvail(&available_size);
+            const offset = @max(0, 0.5 * (available_size.x - text_size.x));
+            imgui.igSetCursorPosX(imgui.igGetCursorPosX() + offset);
+            const color: imgui.ImVec4 = switch (player.can_interact orelse true) {
+                true => .{ .x = 1, .y = 1, .z = 1, .w = 1 },
+                false => .{ .x = 0.6, .y = 0.6, .z = 0.6, .w = 1 },
+            };
+            imgui.igTextColored(color, "%s", text.ptr);
+        }
+
+        const cell_hovered = imgui.igTableGetHoveredColumn() == imgui.igTableGetColumnIndex() and
+            imgui.igTableGetHoveredRow() == index +| 1;
+        if (cell_hovered and imgui.igBeginTooltip()) {
+            defer imgui.igEndTooltip();
+            if (player.animation_id) |animation_id| {
+                var buffer: [16]u8 = undefined;
+                const text = std.fmt.bufPrintZ(&buffer, "{}", .{animation_id}) catch "error";
+                imgui.igText("Animation ID:");
+                imgui.igSameLine(0, -1);
+                imgui.igText("%s", text.ptr);
+            }
+            if (player.animation_frame) |animation_frame| {
+                var buffer: [16]u8 = undefined;
+                const text = std.fmt.bufPrintZ(&buffer, "{}", .{animation_frame}) catch "error";
+                imgui.igText("Animation Frame:");
+                imgui.igSameLine(0, -1);
+                imgui.igText("%s", text.ptr);
+            }
+            if (player.move_phase) |move_phase| {
+                const text, const color: imgui.ImVec4 = switch (move_phase) {
+                    .neutral => .{ "Neutral", .{ .x = 0.5, .y = 1, .z = 0.5, .w = 1 } },
+                    .start_up => .{ "Start Up", .{ .x = 1, .y = 0.5, .z = 0.5, .w = 1 } },
+                    .active => .{ "Active", .{ .x = 1, .y = 1, .z = 0, .w = 1 } },
+                    .active_recovery => .{ "Active Recovery", .{ .x = 0.5, .y = 1, .z = 1, .w = 1 } },
+                    .recovery => .{ "Recovery", .{ .x = 0.5, .y = 1, .z = 1, .w = 1 } },
+                };
+                imgui.igText("Move Phase:");
+                imgui.igSameLine(0, -1);
+                imgui.igTextColored(color, "%s", text.ptr);
+            }
+            if (player.can_interact) |can_interact| {
+                const text, const color: imgui.ImVec4 = switch (can_interact) {
+                    true => .{ "Yes", .{ .x = 1, .y = 1, .z = 1, .w = 1 } },
+                    false => .{ "No", .{ .x = 0.6, .y = 0.6, .z = 0.6, .w = 1 } },
+                };
+                imgui.igText("Can Interact:");
+                imgui.igSameLine(0, -1);
+                imgui.igTextColored(color, "%s", text.ptr);
+            }
+        }
+    }
+
     fn handleSelectLogic(self: *Self) void {
         if (!imgui.igIsMouseDown_Nil(imgui.ImGuiMouseButton_Left)) {
             if (self.state == .selecting) {
@@ -476,7 +618,7 @@ pub const TaiTable = struct {
 
         const player_id: model.PlayerId = switch (imgui.igTableGetHoveredColumn()) {
             1 => .player_1,
-            3 => .player_2,
+            5 => .player_2,
             else => return,
         };
         const index = std.math.cast(usize, imgui.igTableGetHoveredRow() -| 1) orelse return;
