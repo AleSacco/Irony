@@ -123,22 +123,6 @@ pub const Crushing = packed struct {
     power_crushing: bool = false,
 };
 
-pub const Input = packed struct {
-    forward: bool = false,
-    back: bool = false,
-    up: bool = false,
-    down: bool = false,
-    left: bool = false,
-    right: bool = false,
-    button_1: bool = false,
-    button_2: bool = false,
-    button_3: bool = false,
-    button_4: bool = false,
-    special_style: bool = false,
-    rage: bool = false,
-    heat: bool = false,
-};
-
 pub const Rage = enum {
     available,
     activated,

@@ -102,6 +102,7 @@ test {
     _ = @import("dll/model/frame.zig");
     _ = @import("dll/model/hit_lines.zig");
     _ = @import("dll/model/hurt_cylinders.zig");
+    _ = @import("dll/model/input.zig");
     _ = @import("dll/model/misc.zig");
     _ = @import("dll/model/player.zig");
     _ = @import("dll/model/recording.zig");

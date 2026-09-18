@@ -5,8 +5,6 @@ const model = @import("../model/root.zig");
 const core = @import("../core/root.zig");
 const ui = @import("root.zig");
 
-const input_text_buffer_size = 32;
-
 pub const TaiTable = struct {
     editor: ui.TaiEditor,
     state: State,
@@ -432,9 +430,13 @@ pub const TaiTable = struct {
             .player_1 => items[index].player_1,
             .player_2 => items[index].player_2,
         };
-        var buffer: [input_text_buffer_size]u8 = undefined;
-        const input_text = writeInputText(&buffer, input);
-        imgui.igText("%s", input_text.ptr);
+        var buffer: [32]u8 = undefined;
+        const text = std.fmt.bufPrintZ(&buffer, "{f}", .{input}) catch "error";
+        if (text.len > 0) {
+            imgui.igText("%s", text.ptr);
+        } else {
+            imgui.igText("---");
+        }
     }
 
     fn handleSelectLogic(self: *Self) void {
@@ -489,74 +491,3 @@ pub const TaiTable = struct {
         // TODO
     }
 };
-
-fn writeInputText(buffer: *[input_text_buffer_size]u8, input: model.Input) [:0]u8 {
-    var writer = std.Io.Writer.fixed(buffer);
-    if (input.up and !input.down) {
-        writer.writeByte('u') catch {};
-    }
-    if (input.down and !input.up) {
-        writer.writeByte('d') catch {};
-    }
-    if (input.forward and !input.back) {
-        writer.writeByte('f') catch {};
-    }
-    if (input.back and !input.forward) {
-        writer.writeByte('b') catch {};
-    }
-    var is_first = true;
-    if (input.button_1) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeByte('1') catch {};
-        is_first = false;
-    }
-    if (input.button_2) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeByte('2') catch {};
-        is_first = false;
-    }
-    if (input.button_3) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeByte('3') catch {};
-        is_first = false;
-    }
-    if (input.button_4) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeByte('4') catch {};
-        is_first = false;
-    }
-    if (input.special_style) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeAll("SS") catch {};
-        is_first = false;
-    }
-    if (input.rage) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeByte('R') catch {};
-        is_first = false;
-    }
-    if (input.heat) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeByte('H') catch {};
-        is_first = false;
-    }
-    if (writer.end == 0) {
-        writer.writeAll("---") catch {};
-    }
-    writer.writeByte(0) catch {};
-    return buffer[0..(writer.end - 1) :0];
-}

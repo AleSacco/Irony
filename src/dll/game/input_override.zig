@@ -28,27 +28,10 @@ pub const InputOverride = struct {
             .player_2 => self.player_2 orelse return,
             else => return,
         };
-        const previous_input = convertInput(game_id, cleanInput(override.previous_input), player_side);
-        const current_input = convertInput(game_id, cleanInput(override.current_input), player_side);
+        const previous_input = convertInput(game_id, override.previous_input.clean(), player_side);
+        const current_input = convertInput(game_id, override.current_input.clean(), player_side);
         down_input.* = current_input;
         press_input.* = @bitCast(~@as(u32, @bitCast(previous_input)) & @as(u32, @bitCast(current_input)));
-    }
-
-    fn cleanInput(input: model.Input) model.Input {
-        var cleaned_input = input;
-        if (cleaned_input.forward and cleaned_input.back) {
-            cleaned_input.forward = false;
-            cleaned_input.back = false;
-        }
-        if (cleaned_input.left and cleaned_input.right) {
-            cleaned_input.left = false;
-            cleaned_input.right = false;
-        }
-        if (cleaned_input.up and cleaned_input.down) {
-            cleaned_input.up = false;
-            cleaned_input.down = false;
-        }
-        return cleaned_input;
     }
 
     fn convertInput(comptime game_id: build_info.Game, input: model.Input, side: game.PlayerSide) game.Input(game_id) {

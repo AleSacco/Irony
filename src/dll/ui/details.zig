@@ -1191,75 +1191,11 @@ fn drawCrushing(value: model.Crushing, alpha: f32) void {
 
 fn drawInput(value: model.Input, alpha: f32) void {
     var buffer: [string_buffer_size]u8 = [1]u8{0} ** string_buffer_size;
-    var writer = std.Io.Writer.fixed(&buffer);
-    if (value.up and !value.down) {
-        writer.writeByte('u') catch {};
-    }
-    if (value.down and !value.up) {
-        writer.writeByte('d') catch {};
-    }
-    if (value.forward and !value.back) {
-        writer.writeByte('f') catch {};
-    }
-    if (value.back and !value.forward) {
-        writer.writeByte('b') catch {};
-    }
-    var is_first = true;
-    if (value.button_1) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeByte('1') catch {};
-        is_first = false;
-    }
-    if (value.button_2) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeByte('2') catch {};
-        is_first = false;
-    }
-    if (value.button_3) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeByte('3') catch {};
-        is_first = false;
-    }
-    if (value.button_4) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeByte('4') catch {};
-        is_first = false;
-    }
-    if (value.special_style) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeAll("SS") catch {};
-        is_first = false;
-    }
-    if (value.rage) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeByte('R') catch {};
-        is_first = false;
-    }
-    if (value.heat) {
-        if (!is_first) {
-            writer.writeByte('+') catch {};
-        }
-        writer.writeByte('H') catch {};
-        is_first = false;
-    }
-    if (writer.end == 0) {
-        drawText(empty_value_string, alpha);
-    } else if (writer.end >= buffer.len - 1) {
-        drawText(error_string, alpha);
+    const text = std.fmt.bufPrintZ(&buffer, "{f}", .{value}) catch error_string;
+    if (text.len > 0) {
+        drawText(text, alpha);
     } else {
-        drawText(buffer[0..writer.end :0], alpha);
+        drawText(empty_value_string, alpha);
     }
 }
 
