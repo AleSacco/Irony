@@ -79,9 +79,9 @@ pub const TaiTable = struct {
 
                 const index = std.math.cast(usize, c_index) orelse break;
                 self.drawMoveCell(index, items);
-                self.drawPlayerCell(.player_1, index, items);
+                self.drawPlayerCell(.player_1, index, items, controller);
                 self.drawSwapCell(index, items);
-                self.drawPlayerCell(.player_2, index, items);
+                self.drawPlayerCell(.player_2, index, items, controller);
                 self.drawButtonsCell(index, items);
             }
         }
@@ -397,7 +397,13 @@ pub const TaiTable = struct {
         }
     }
 
-    fn drawPlayerCell(self: *Self, player_id: model.PlayerId, index: usize, items: Items) void {
+    fn drawPlayerCell(
+        self: *Self,
+        player_id: model.PlayerId,
+        index: usize,
+        items: Items,
+        controller: *const core.Controller,
+    ) void {
         if (!imgui.igTableNextColumn()) {
             return;
         }
@@ -423,19 +429,40 @@ pub const TaiTable = struct {
             imgui.igTableSetBgColor(imgui.ImGuiTableBgTarget_CellBg, color_u32, -1);
         }
 
+        const added_color = imgui.ImVec4{ .x = 0.5, .y = 1, .z = 0.5, .w = 1 };
+        const removed_color = imgui.ImVec4{ .x = 1, .y = 0.5, .z = 0.5, .w = 0.3 };
+        const recording_frame_maybe = controller.getFrameAt(index);
         if (index >= items.len) {
+            if (recording_frame_maybe != null) {
+                imgui.igTextColored(removed_color, "...");
+            }
             return;
         }
-        const input = switch (player_id) {
+        const table_input = switch (player_id) {
             .player_1 => items[index].player_1,
             .player_2 => items[index].player_2,
         };
-        var buffer: [32]u8 = undefined;
-        const text = std.fmt.bufPrintZ(&buffer, "{f}", .{input}) catch "error";
-        if (text.len > 0) {
-            imgui.igText("%s", text.ptr);
+        var table_buffer: [32]u8 = undefined;
+        const table_text = block: {
+            const text = std.fmt.bufPrintZ(&table_buffer, "{f}", .{table_input}) catch "error";
+            break :block if (text.len > 0) text else "---";
+        };
+        if (recording_frame_maybe) |recording_frame| {
+            const recording_input: model.Input = recording_frame.getPlayerById(player_id).input orelse .{};
+            if (table_input.equalsIgnoringLeftRight(recording_input)) {
+                imgui.igText("%s", table_text.ptr);
+            } else {
+                var recording_buffer: [32]u8 = undefined;
+                const recording_text = block: {
+                    const text = std.fmt.bufPrintZ(&recording_buffer, "{f}", .{recording_input}) catch "error";
+                    break :block if (text.len > 0) text else "---";
+                };
+                imgui.igTextColored(added_color, "%s", table_text.ptr);
+                imgui.igSameLine(0, -1);
+                imgui.igTextColored(removed_color, "%s", recording_text.ptr);
+            }
         } else {
-            imgui.igText("---");
+            imgui.igTextColored(added_color, "%s", table_text.ptr);
         }
     }
 
