@@ -42,10 +42,6 @@ pub const TaiEditor = struct {
         self.uncommitted.deinit(self.allocator);
     }
 
-    pub fn select(self: *Self, selection: *const Selection) void {
-        self.selection = selection.*;
-    }
-
     pub fn insertRows(self: *Self) !void {
         const min_index = @min(self.selection.start.index, self.selection.end.index);
         const max_index = @max(self.selection.start.index, self.selection.end.index);
@@ -629,18 +625,6 @@ const Change = union(enum) {
 
 const testing = std.testing;
 
-test "select should set selection" {
-    var editor = TaiEditor.init(testing.allocator);
-    defer editor.deinit();
-
-    const selection = TaiEditor.Selection{
-        .start = .{ .index = 1, .player_id = .player_1 },
-        .end = .{ .index = 2, .player_id = .player_2 },
-    };
-    editor.select(&selection);
-    try testing.expectEqual(selection, editor.selection);
-}
-
 test "commit should do nothing when no uncommitted changes are pending" {
     var editor = TaiEditor.init(testing.allocator);
     defer editor.deinit();
@@ -663,10 +647,10 @@ test "commit should revert changes and return error when operating out of bounds
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     });
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 1, .player_id = .player_1 },
         .end = .{ .index = 4, .player_id = .player_2 },
-    });
+    };
     try editor.setValues(.{});
     try testing.expectError(error.IndexOutOfBounds, editor.commit(&tai));
 
@@ -705,20 +689,20 @@ test "canUndo and canRedo should return correct values" {
     try testing.expectEqual(false, editor.canUndo());
     try testing.expectEqual(false, editor.canRedo());
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 0, .player_id = .player_1 },
         .end = .{ .index = 0, .player_id = .player_1 },
-    });
+    };
     try editor.insertRows();
     try editor.commit(&tai);
 
     try testing.expectEqual(true, editor.canUndo());
     try testing.expectEqual(false, editor.canRedo());
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 0, .player_id = .player_1 },
         .end = .{ .index = 0, .player_id = .player_1 },
-    });
+    };
     try editor.insertRows();
     try editor.commit(&tai);
 
@@ -735,10 +719,10 @@ test "canUndo and canRedo should return correct values" {
     try testing.expectEqual(false, editor.canUndo());
     try testing.expectEqual(true, editor.canRedo());
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 0, .player_id = .player_1 },
         .end = .{ .index = 0, .player_id = .player_1 },
-    });
+    };
     try editor.insertRows();
     try editor.commit(&tai);
 
@@ -758,10 +742,10 @@ test "insertRows should insert empty rows at selected indices" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     });
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 1, .player_id = .player_1 },
         .end = .{ .index = 2, .player_id = .player_2 },
-    });
+    };
     try editor.insertRows();
     try editor.commit(&tai);
 
@@ -774,10 +758,10 @@ test "insertRows should insert empty rows at selected indices" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 6, .player_id = .player_1 },
         .end = .{ .index = 6, .player_id = .player_1 },
-    });
+    };
     try editor.insertRows();
     try editor.commit(&tai);
 
@@ -847,10 +831,10 @@ test "deleteRows should delete rows at selected indices" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     });
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 1, .player_id = .player_1 },
         .end = .{ .index = 2, .player_id = .player_2 },
-    });
+    };
     try editor.deleteRows();
     try editor.commit(&tai);
 
@@ -859,10 +843,10 @@ test "deleteRows should delete rows at selected indices" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 1, .player_id = .player_1 },
         .end = .{ .index = 1, .player_id = .player_1 },
-    });
+    };
     try editor.deleteRows();
     try editor.commit(&tai);
 
@@ -912,10 +896,10 @@ test "move should move selected rows to specified destination index" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     });
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 1, .player_id = .player_1 },
         .end = .{ .index = 1, .player_id = .player_2 },
-    });
+    };
     try editor.move(3);
     try editor.commit(&tai);
 
@@ -926,10 +910,10 @@ test "move should move selected rows to specified destination index" {
         .{ .player_1 = .{ .down = true }, .player_2 = .{ .button_2 = true } },
     }, tai.sequence.items);
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 2, .player_id = .player_2 },
         .end = .{ .index = 3, .player_id = .player_2 },
-    });
+    };
     try editor.move(0);
     try editor.commit(&tai);
 
@@ -989,10 +973,10 @@ test "swapSides should should swap values between player 1 and player on selecte
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     });
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 1, .player_id = .player_1 },
         .end = .{ .index = 2, .player_id = .player_2 },
-    });
+    };
     try editor.swapSides();
     try editor.commit(&tai);
 
@@ -1003,10 +987,10 @@ test "swapSides should should swap values between player 1 and player on selecte
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 0, .player_id = .player_2 },
         .end = .{ .index = 3, .player_id = .player_2 },
-    });
+    };
     try editor.swapSides();
     try editor.commit(&tai);
 
@@ -1135,10 +1119,10 @@ test "setValues should set every cell the selection to the specified value" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     });
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 1, .player_id = .player_1 },
         .end = .{ .index = 2, .player_id = .player_2 },
-    });
+    };
     try editor.setValues(.{ .rage = true });
     try editor.commit(&tai);
 
@@ -1149,10 +1133,10 @@ test "setValues should set every cell the selection to the specified value" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
 
-    editor.select(&.{
+    editor.selection = .{
         .start = .{ .index = 0, .player_id = .player_2 },
         .end = .{ .index = 3, .player_id = .player_2 },
-    });
+    };
     try editor.setValues(.{ .heat = true });
     try editor.commit(&tai);
 

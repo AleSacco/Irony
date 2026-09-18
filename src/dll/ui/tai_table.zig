@@ -108,10 +108,10 @@ pub const TaiTable = struct {
 
         imgui.igBeginDisabled(items.len == 0);
         if (imgui.igButton(" ⇄ ###swap", .{})) {
-            self.editor.select(&.{
+            self.editor.selection = .{
                 .start = .{ .index = 0, .player_id = .player_1 },
                 .end = .{ .index = items.len - 1, .player_id = .player_2 },
-            });
+            };
             self.editor.swapSides() catch |err| {
                 sdk.misc.error_context.append("Failed to swap player inputs.", .{});
                 sdk.misc.error_context.logError(err);
@@ -347,10 +347,10 @@ pub const TaiTable = struct {
         defer imgui.igPopStyleVar(1);
 
         if (imgui.igButton(" ➕ ###insert", .{})) {
-            self.editor.select(&.{
+            self.editor.selection = .{
                 .start = .{ .index = index, .player_id = .player_1 },
                 .end = .{ .index = index, .player_id = .player_2 },
-            });
+            };
             self.editor.insertRows() catch |err| {
                 sdk.misc.error_context.append("Failed to insert row.", .{});
                 sdk.misc.error_context.logError(err);
@@ -367,10 +367,10 @@ pub const TaiTable = struct {
         imgui.igSameLine(0, imgui.igGetStyle().*.ItemInnerSpacing.x);
 
         if (imgui.igButton(" ❎ ###delete", .{})) {
-            self.editor.select(&.{
+            self.editor.selection = .{
                 .start = .{ .index = index, .player_id = .player_1 },
                 .end = .{ .index = index, .player_id = .player_2 },
-            });
+            };
             self.editor.deleteRows() catch |err| {
                 sdk.misc.error_context.append("Failed to delete row.", .{});
                 sdk.misc.error_context.logError(err);
@@ -398,13 +398,12 @@ pub const TaiTable = struct {
 
         if (imgui.igIsMouseClicked_Bool(imgui.ImGuiMouseButton_Left, false)) {
             self.state = .selecting;
-            const cell = ui.TaiEditor.Selection.Cell{ .player_id = player_id, .index = index };
-            self.editor.select(&.{ .start = cell, .end = cell });
-        } else if (self.state == .selecting) {
-            self.editor.select(&.{
-                .start = self.editor.selection.start,
+            self.editor.selection = .{
+                .start = .{ .player_id = player_id, .index = index },
                 .end = .{ .player_id = player_id, .index = index },
-            });
+            };
+        } else if (self.state == .selecting) {
+            self.editor.selection.end = .{ .player_id = player_id, .index = index };
         }
     }
 
