@@ -47,7 +47,7 @@ pub const TaiTable = struct {
         enable_player_2: *bool,
     ) void {
         const table_flags = imgui.ImGuiTableFlags_ScrollY | imgui.ImGuiTableFlags_RowBg | imgui.ImGuiTableFlags_Borders;
-        const is_rendered = imgui.igBeginTable("sequence", 4, table_flags, .{}, 0);
+        const is_rendered = imgui.igBeginTable("sequence", 5, table_flags, .{}, 0);
         if (!is_rendered) {
             return;
         }
@@ -58,11 +58,13 @@ pub const TaiTable = struct {
         imgui.igTableSetupScrollFreeze(0, 1);
         imgui.igTableSetupColumn("move", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
         imgui.igTableSetupColumn("player_1", imgui.ImGuiTableColumnFlags_WidthStretch, 0, 0);
+        imgui.igTableSetupColumn("swap", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
         imgui.igTableSetupColumn("player_2", imgui.ImGuiTableColumnFlags_WidthStretch, 0, 0);
         imgui.igTableSetupColumn("buttons", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
 
-        self.drawMoveHeader(items);
+        self.drawMoveHeader(tai);
         drawPlayerHeader(enable_player_1, .player_1);
+        self.drawSwapHeader(items);
         drawPlayerHeader(enable_player_2, .player_2);
         self.drawButtonsHeader(tai, controller);
 
@@ -80,6 +82,7 @@ pub const TaiTable = struct {
                 const index = std.math.cast(usize, c_index) orelse break;
                 self.drawMoveCell(index, items);
                 self.drawPlayerCell(.player_1, index, items);
+                self.drawSwapCell(index, items);
                 self.drawPlayerCell(.player_2, index, items);
                 self.drawButtonsCell(index, items);
             }
@@ -95,12 +98,39 @@ pub const TaiTable = struct {
         };
     }
 
-    fn drawMoveHeader(self: *Self, items: Items) void {
+    fn drawMoveHeader(self: *Self, tai: *core.ToolAssistedInput) void {
         if (!imgui.igTableNextColumn()) {
             return;
         }
 
-        imgui.igPushID_Str("buttons_1");
+        imgui.igPushID_Str("move");
+        defer imgui.igPopID();
+
+        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
+        defer imgui.igPopStyleVar(1);
+
+        imgui.igBeginDisabled(!self.editor.canUndo());
+        if (imgui.igButton(" ↶ ###undo", .{})) {
+            self.editor.undo(tai) catch |err| {
+                sdk.misc.error_context.append("Failed to undo.", .{});
+                sdk.misc.error_context.logError(err);
+            };
+        }
+        imgui.igEndDisabled();
+        if (imgui.igIsItemHovered(0)) {
+            imgui.igSetTooltip("Undo");
+        }
+
+        imgui.igSameLine(0, 0);
+        imgui.igTableHeader("");
+    }
+
+    fn drawSwapHeader(self: *Self, items: Items) void {
+        if (!imgui.igTableNextColumn()) {
+            return;
+        }
+
+        imgui.igPushID_Str("swap");
         defer imgui.igPopID();
 
         imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
@@ -119,45 +149,11 @@ pub const TaiTable = struct {
         }
         imgui.igEndDisabled();
         if (imgui.igIsItemHovered(0)) {
-            imgui.igSetTooltip("Swap Player Inputs");
+            imgui.igSetTooltip("Swap All Player Inputs");
         }
 
         imgui.igSameLine(0, 0);
         imgui.igTableHeader("");
-    }
-
-    fn drawPlayerHeader(enabled: *bool, player_id: model.PlayerId) void {
-        if (!imgui.igTableNextColumn()) {
-            return;
-        }
-        const label = switch (player_id) {
-            .player_1 => "Player 1",
-            .player_2 => "Player 2",
-        };
-        imgui.igPushID_Str(label);
-        defer imgui.igPopID();
-
-        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
-        defer imgui.igPopStyleVar(1);
-
-        _ = imgui.igCheckbox("##enable", enabled);
-        if (imgui.igIsItemHovered(0)) {
-            const tooltip = switch (enabled.*) {
-                false => switch (player_id) {
-                    .player_1 => "Enable player 1 input simulation.",
-                    .player_2 => "Enable player 2 input simulation.",
-                },
-                true => switch (player_id) {
-                    .player_1 => "Disable player 1 input simulation.",
-                    .player_2 => "Disable player 2 input simulation.",
-                },
-            };
-            imgui.igSetTooltip(tooltip);
-        }
-
-        imgui.igSameLine(0, imgui.igGetStyle().*.ItemInnerSpacing.x);
-
-        imgui.igTableHeader(label);
     }
 
     fn drawButtonsHeader(self: *Self, tai: *core.ToolAssistedInput, controller: *const core.Controller) void {
@@ -165,7 +161,7 @@ pub const TaiTable = struct {
             return;
         }
 
-        imgui.igPushID_Str("buttons_2");
+        imgui.igPushID_Str("buttons");
         defer imgui.igPopID();
 
         const is_import_confirm_open = self.state == .confirming and self.state.confirming == .import;
@@ -270,6 +266,40 @@ pub const TaiTable = struct {
         imgui.igTableHeader("");
     }
 
+    fn drawPlayerHeader(enabled: *bool, player_id: model.PlayerId) void {
+        if (!imgui.igTableNextColumn()) {
+            return;
+        }
+        const label = switch (player_id) {
+            .player_1 => "Player 1",
+            .player_2 => "Player 2",
+        };
+        imgui.igPushID_Str(label);
+        defer imgui.igPopID();
+
+        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
+        defer imgui.igPopStyleVar(1);
+
+        _ = imgui.igCheckbox("##enable", enabled);
+        if (imgui.igIsItemHovered(0)) {
+            const tooltip = switch (enabled.*) {
+                false => switch (player_id) {
+                    .player_1 => "Enable player 1 input simulation.",
+                    .player_2 => "Enable player 2 input simulation.",
+                },
+                true => switch (player_id) {
+                    .player_1 => "Disable player 1 input simulation.",
+                    .player_2 => "Disable player 2 input simulation.",
+                },
+            };
+            imgui.igSetTooltip(tooltip);
+        }
+
+        imgui.igSameLine(0, imgui.igGetStyle().*.ItemInnerSpacing.x);
+
+        imgui.igTableHeader(label);
+    }
+
     fn drawMoveCell(self: *Self, index: usize, items: Items) void {
         if (!imgui.igTableNextColumn()) {
             return;
@@ -300,42 +330,30 @@ pub const TaiTable = struct {
         }
     }
 
-    fn drawPlayerCell(self: *Self, player_id: model.PlayerId, index: usize, items: Items) void {
+    fn drawSwapCell(self: *Self, index: usize, items: Items) void {
         if (!imgui.igTableNextColumn()) {
             return;
         }
-        imgui.igPushID_Str(switch (player_id) {
-            .player_1 => "player_1",
-            .player_2 => "player_2",
-        });
-        defer imgui.igPopID();
-
-        const is_selected = block: {
-            const s = &self.editor.selection;
-            if (index < @min(s.start.index, s.end.index) or index > @max(s.start.index, s.end.index)) {
-                break :block false;
-            }
-            if (player_id != s.start.player_id and player_id != s.end.player_id) {
-                break :block false;
-            }
-            break :block true;
-        };
-        if (is_selected) {
-            const color = imgui.igGetStyle().*.Colors[imgui.ImGuiCol_HeaderHovered];
-            const color_u32 = imgui.igGetColorU32_Vec4(color);
-            imgui.igTableSetBgColor(imgui.ImGuiTableBgTarget_CellBg, color_u32, -1);
-        }
-
         if (index >= items.len) {
             return;
         }
-        const input = switch (player_id) {
-            .player_1 => items[index].player_1,
-            .player_2 => items[index].player_2,
-        };
-        var buffer: [input_text_buffer_size]u8 = undefined;
-        const input_text = writeInputText(&buffer, input);
-        imgui.igText("%s", input_text.ptr);
+
+        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
+        defer imgui.igPopStyleVar(1);
+
+        if (imgui.igButton(" ⇄ ###swap", .{})) {
+            self.editor.selection = .{
+                .start = .{ .index = index, .player_id = .player_1 },
+                .end = .{ .index = index, .player_id = .player_2 },
+            };
+            self.editor.swapSides() catch |err| {
+                sdk.misc.error_context.append("Failed to swap player inputs.", .{});
+                sdk.misc.error_context.logError(err);
+            };
+        }
+        if (imgui.igIsItemHovered(0)) {
+            imgui.igSetTooltip("Swap Player Inputs");
+        }
     }
 
     fn drawButtonsCell(self: *Self, index: usize, items: Items) void {
@@ -381,6 +399,44 @@ pub const TaiTable = struct {
         }
     }
 
+    fn drawPlayerCell(self: *Self, player_id: model.PlayerId, index: usize, items: Items) void {
+        if (!imgui.igTableNextColumn()) {
+            return;
+        }
+        imgui.igPushID_Str(switch (player_id) {
+            .player_1 => "player_1",
+            .player_2 => "player_2",
+        });
+        defer imgui.igPopID();
+
+        const is_selected = block: {
+            const s = &self.editor.selection;
+            if (index < @min(s.start.index, s.end.index) or index > @max(s.start.index, s.end.index)) {
+                break :block false;
+            }
+            if (player_id != s.start.player_id and player_id != s.end.player_id) {
+                break :block false;
+            }
+            break :block true;
+        };
+        if (is_selected) {
+            const color = imgui.igGetStyle().*.Colors[imgui.ImGuiCol_HeaderHovered];
+            const color_u32 = imgui.igGetColorU32_Vec4(color);
+            imgui.igTableSetBgColor(imgui.ImGuiTableBgTarget_CellBg, color_u32, -1);
+        }
+
+        if (index >= items.len) {
+            return;
+        }
+        const input = switch (player_id) {
+            .player_1 => items[index].player_1,
+            .player_2 => items[index].player_2,
+        };
+        var buffer: [input_text_buffer_size]u8 = undefined;
+        const input_text = writeInputText(&buffer, input);
+        imgui.igText("%s", input_text.ptr);
+    }
+
     fn handleSelectLogic(self: *Self) void {
         if (!imgui.igIsMouseDown_Nil(imgui.ImGuiMouseButton_Left)) {
             if (self.state == .selecting) {
@@ -391,7 +447,7 @@ pub const TaiTable = struct {
 
         const player_id: model.PlayerId = switch (imgui.igTableGetHoveredColumn()) {
             1 => .player_1,
-            2 => .player_2,
+            3 => .player_2,
             else => return,
         };
         const index = std.math.cast(usize, imgui.igTableGetHoveredRow() -| 1) orelse return;
