@@ -19,17 +19,16 @@ pub const TaiEditor = struct {
             player_id: model.PlayerId,
             index: usize,
         };
-    };
-
-    const initial_selection = Selection{
-        .start = .{ .index = 0, .player_id = .player_1 },
-        .end = .{ .index = 0, .player_id = .player_1 },
+        pub const initial = Selection{
+            .start = .{ .index = 0, .player_id = .player_1 },
+            .end = .{ .index = 0, .player_id = .player_1 },
+        };
     };
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .selection = initial_selection,
+            .selection = .initial,
             .uncommitted = .empty,
             .undo_stack = .empty,
             .redo_stack = .empty,
@@ -341,7 +340,7 @@ pub const TaiEditor = struct {
         self.uncommitted.clearAndFree(self.allocator);
         self.undo_stack.clearAndFree(self.allocator);
         self.redo_stack.clearAndFree(self.allocator);
-        self.selection = initial_selection;
+        self.selection = .initial;
     }
 
     pub fn importFromRecording(self: *Self, tai: *core.ToolAssistedInput, controller: *const core.Controller) !void {

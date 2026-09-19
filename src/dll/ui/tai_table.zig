@@ -8,6 +8,8 @@ const ui = @import("root.zig");
 pub const TaiTable = struct {
     editor: ui.TaiEditor,
     state: State,
+    previous_selection: ui.TaiEditor.Selection = .initial,
+    previous_frame_index: ?usize = null,
 
     const Self = @This();
     const State = union(enum) {
@@ -40,10 +42,13 @@ pub const TaiTable = struct {
     pub fn draw(
         self: *Self,
         tai: *core.ToolAssistedInput,
-        controller: *const core.Controller,
+        controller: *core.Controller,
         enable_player_1: *bool,
         enable_player_2: *bool,
     ) void {
+        defer self.previous_frame_index = controller.getCurrentFrameIndex();
+        defer self.previous_selection = self.editor.selection;
+
         const table_flags = imgui.ImGuiTableFlags_ScrollY | imgui.ImGuiTableFlags_RowBg | imgui.ImGuiTableFlags_Borders;
         const is_rendered = imgui.igBeginTable("sequence", 7, table_flags, .{}, 0);
         if (!is_rendered) {
@@ -53,7 +58,7 @@ pub const TaiTable = struct {
 
         const items: Items = tai.sequence.items;
 
-        if (imgui.igIsWindowFocused(0)) {
+        if (imgui.igIsWindowFocused(0) and self.state == .idle) {
             self.handleKeyboardSelect(items);
             handleEnabledShortcut(enable_player_1, .player_1);
             handleEnabledShortcut(enable_player_2, .player_2);
@@ -178,6 +183,32 @@ pub const TaiTable = struct {
             sdk.misc.error_context.logError(err);
             self.editor.discardUncommitted();
         };
+
+        self.syncSelectionWithController(controller, items);
+    }
+
+    fn syncSelectionWithController(self: *Self, controller: *core.Controller, items: Items) void {
+        if (controller.mode != .pause) {
+            return;
+        }
+        const current_frame_index = controller.getCurrentFrameIndex();
+        const current_selection = self.editor.selection;
+        if (current_frame_index != self.previous_frame_index) {
+            const index_maybe = current_frame_index;
+            if (index_maybe) |index| {
+                if (index < items.len) {
+                    self.editor.selection = .{
+                        .start = .{ .index = index, .player_id = .player_1 },
+                        .end = .{ .index = index, .player_id = .player_2 },
+                    };
+                }
+            }
+        } else if (!std.meta.eql(current_selection, self.previous_selection)) {
+            const index = current_selection.end.index;
+            if (index < controller.getTotalFrames() and index < items.len) {
+                controller.setCurrentFrameIndex(index);
+            }
+        }
     }
 
     fn drawInputCellContent(
