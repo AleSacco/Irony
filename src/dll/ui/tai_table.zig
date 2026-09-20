@@ -272,17 +272,13 @@ pub const TaiTable = struct {
     ) void {
         const CellType = enum { normal, selected, active };
         const cell_type: CellType = block: {
-            const s = &self.editor.selection;
-            if (s.end.player_id == player_id and s.end.index == index) {
+            if (self.editor.selection.end.player_id == player_id and self.editor.selection.end.index == index) {
                 break :block .active;
-            }
-            if (index < @min(s.start.index, s.end.index) or index > @max(s.start.index, s.end.index)) {
+            } else if (self.editor.selection.isCellInside(player_id, index)) {
+                break :block .selected;
+            } else {
                 break :block .normal;
             }
-            if (player_id != s.start.player_id and player_id != s.end.player_id) {
-                break :block .normal;
-            }
-            break :block .selected;
         };
         const cell_color = switch (cell_type) {
             .normal => if (frame_maybe) |frame| block: {
@@ -796,8 +792,8 @@ pub const TaiTable = struct {
         const up_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_UpArrow, true);
         const down_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_DownArrow, true);
         const selection = &self.editor.selection;
-        const min_index = @min(selection.start.index, selection.end.index);
-        const max_index = @max(selection.start.index, selection.end.index);
+        const min_index = selection.getMinIndex();
+        const max_index = selection.getMaxIndex();
         if (up_pressed and !down_pressed and min_index > 0) {
             if (self.editor.move(min_index - 1)) {
                 selection.start.index -= 1;
@@ -818,28 +814,52 @@ pub const TaiTable = struct {
         }
     }
 
-    fn drawSwapButton(self: *Self, index: ?usize, items: Items) void {
+    fn drawSwapButton(self: *Self, index_maybe: ?usize, items: Items) void {
         imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
         defer imgui.igPopStyleVar(1);
 
         imgui.igBeginDisabled(items.len == 0);
         defer imgui.igEndDisabled();
 
+        const selection = &self.editor.selection;
         if (imgui.igButton(" ⇄ ###swap", .{})) {
-            self.editor.selection = .{
-                .start = .{ .index = if (index) |i| i else 0, .player_id = .player_1 },
-                .end = .{ .index = if (index) |i| i else items.len - 1, .player_id = .player_2 },
-            };
+            if (index_maybe) |index| {
+                if (!selection.isIndexInside(index)) {
+                    selection.* = .{
+                        .start = .{ .index = index, .player_id = .player_1 },
+                        .end = .{ .index = index, .player_id = .player_2 },
+                    };
+                }
+            } else {
+                selection.* = .{
+                    .start = .{ .index = 0, .player_id = .player_1 },
+                    .end = .{ .index = items.len - 1, .player_id = .player_2 },
+                };
+            }
             self.editor.swapSides() catch |err| {
                 sdk.misc.error_context.append("Failed to swap input sides.", .{});
                 sdk.misc.error_context.logError(err);
             };
+            if (selection.start.player_id == selection.end.player_id) {
+                selection.start.player_id = selection.start.player_id.getOther();
+                selection.end.player_id = selection.end.player_id.getOther();
+            }
         }
         if (imgui.igIsItemHovered(0)) {
-            if (index == null) {
-                imgui.igSetTooltip("Swap Inputs Inside All Rows");
+            if (index_maybe) |index| {
+                if (selection.isIndexInside(index)) {
+                    var buffer: [128]u8 = undefined;
+                    const text = std.fmt.bufPrintZ(
+                        &buffer,
+                        "Swap Inputs Inside {} Selected Rows [Alt + Left/Right]",
+                        .{selection.getNumberOfRows()},
+                    ) catch "error";
+                    imgui.igSetTooltip("%s", text.ptr);
+                } else {
+                    imgui.igSetTooltip("Swap Inputs Inside Row");
+                }
             } else {
-                imgui.igSetTooltip("Swap Inputs Inside Row [Alt + Left/Right]");
+                imgui.igSetTooltip("Swap Inputs Inside All Rows");
             }
         }
     }
@@ -883,18 +903,31 @@ pub const TaiTable = struct {
         imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
         defer imgui.igPopStyleVar(1);
 
+        const selection = &self.editor.selection;
         if (imgui.igButton(" ➕ ###insert", .{})) {
-            self.editor.selection = .{
-                .start = .{ .index = index, .player_id = .player_1 },
-                .end = .{ .index = index, .player_id = .player_2 },
-            };
+            if (!selection.isIndexInside(index)) {
+                self.editor.selection = .{
+                    .start = .{ .index = index, .player_id = .player_1 },
+                    .end = .{ .index = index, .player_id = .player_2 },
+                };
+            }
             self.editor.insertRows() catch |err| {
-                sdk.misc.error_context.append("Failed to insert row.", .{});
+                sdk.misc.error_context.append("Failed to insert rows.", .{});
                 sdk.misc.error_context.logError(err);
             };
         }
         if (imgui.igIsItemHovered(0)) {
-            imgui.igSetTooltip("Insert Row [Ins]");
+            const number_of_rows = switch (selection.isIndexInside(index)) {
+                true => selection.getNumberOfRows(),
+                false => 0,
+            };
+            var buffer: [64]u8 = undefined;
+            const text = switch (number_of_rows) {
+                0 => "Insert Row",
+                1 => "Insert 1 Row [Ins]",
+                else => std.fmt.bufPrintZ(&buffer, "Insert {} Rows [Ins]", .{number_of_rows}) catch "error",
+            };
+            imgui.igSetTooltip("%s", text.ptr);
         }
     }
 
@@ -903,7 +936,7 @@ pub const TaiTable = struct {
         const key_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Insert, false);
         if (correct_mods and key_pressed) {
             self.editor.insertRows() catch |err| {
-                sdk.misc.error_context.append("Failed to insert row.", .{});
+                sdk.misc.error_context.append("Failed to insert rows.", .{});
                 sdk.misc.error_context.logError(err);
             };
         }
@@ -913,18 +946,34 @@ pub const TaiTable = struct {
         imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
         defer imgui.igPopStyleVar(1);
 
+        const selection = &self.editor.selection;
         if (imgui.igButton(" ⌫ ###delete", .{})) {
-            self.editor.selection = .{
-                .start = .{ .index = index, .player_id = .player_1 },
-                .end = .{ .index = index, .player_id = .player_2 },
-            };
+            if (!selection.isIndexInside(index)) {
+                selection.* = .{
+                    .start = .{ .index = index, .player_id = .player_1 },
+                    .end = .{ .index = index, .player_id = .player_2 },
+                };
+            }
             self.editor.deleteRows() catch |err| {
-                sdk.misc.error_context.append("Failed to delete row.", .{});
+                sdk.misc.error_context.append("Failed to delete rows.", .{});
                 sdk.misc.error_context.logError(err);
             };
+            const min_index = selection.getMinIndex();
+            selection.start.index = min_index;
+            selection.end.index = min_index;
         }
         if (imgui.igIsItemHovered(0)) {
-            imgui.igSetTooltip("Delete Row [Del]");
+            const number_of_rows = switch (selection.isIndexInside(index)) {
+                true => selection.getNumberOfRows(),
+                false => 0,
+            };
+            var buffer: [64]u8 = undefined;
+            const text = switch (number_of_rows) {
+                0 => "Delete Row",
+                1 => "Delete 1 Selected Row [Del]",
+                else => std.fmt.bufPrintZ(&buffer, "Delete {} Selected Rows [Del]", .{number_of_rows}) catch "error",
+            };
+            imgui.igSetTooltip("%s", text.ptr);
         }
     }
 
@@ -933,9 +982,13 @@ pub const TaiTable = struct {
         const key_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Delete, false);
         if (correct_mods and key_pressed) {
             self.editor.deleteRows() catch |err| {
-                sdk.misc.error_context.append("Failed to delete row.", .{});
+                sdk.misc.error_context.append("Failed to delete rows.", .{});
                 sdk.misc.error_context.logError(err);
             };
+            const selection = &self.editor.selection;
+            const min_index = selection.getMinIndex();
+            selection.start.index = min_index;
+            selection.end.index = min_index;
         }
     }
 };

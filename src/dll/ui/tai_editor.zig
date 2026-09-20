@@ -23,6 +23,46 @@ pub const TaiEditor = struct {
             .start = .{ .index = 0, .player_id = .player_1 },
             .end = .{ .index = 0, .player_id = .player_1 },
         };
+
+        pub fn getMinPlayerId(self: *const Selection) model.PlayerId {
+            if (self.start.player_id == self.end.player_id) {
+                return self.start.player_id;
+            } else {
+                return .player_1;
+            }
+        }
+
+        pub fn getMaxPlayerId(self: *const Selection) model.PlayerId {
+            if (self.start.player_id == self.end.player_id) {
+                return self.start.player_id;
+            } else {
+                return .player_2;
+            }
+        }
+
+        pub fn getMinIndex(self: *const Selection) usize {
+            return @min(self.start.index, self.end.index);
+        }
+
+        pub fn getMaxIndex(self: *const Selection) usize {
+            return @max(self.start.index, self.end.index);
+        }
+
+        pub fn getNumberOfRows(self: *const Selection) usize {
+            return self.getMaxIndex() - self.getMinIndex() + 1;
+        }
+
+        pub fn isPlayerIdInside(self: *const Selection, player_id: model.PlayerId) bool {
+            return player_id == self.start.player_id or player_id == self.end.player_id;
+        }
+
+        pub fn isIndexInside(self: *const Selection, index: usize) bool {
+            return index >= self.getMinIndex() and index <= self.getMaxIndex();
+        }
+
+        pub fn isCellInside(self: *const Selection, player_id: model.PlayerId, index: usize) bool {
+            return self.isPlayerIdInside(player_id) and self.isIndexInside(index);
+        }
     };
 
     pub fn init(allocator: std.mem.Allocator) Self {
@@ -42,8 +82,8 @@ pub const TaiEditor = struct {
     }
 
     pub fn insertRows(self: *Self) !void {
-        const min_index = @min(self.selection.start.index, self.selection.end.index);
-        const max_index = @max(self.selection.start.index, self.selection.end.index);
+        const min_index = self.selection.getMinIndex();
+        const max_index = self.selection.getMaxIndex();
         var number_of_changes_added: usize = 0;
         errdefer for (0..number_of_changes_added) |_| {
             self.removeLastUncommittedChange();
@@ -67,8 +107,8 @@ pub const TaiEditor = struct {
     }
 
     pub fn deleteRows(self: *Self) !void {
-        const min_index = @min(self.selection.start.index, self.selection.end.index);
-        const max_index = @max(self.selection.start.index, self.selection.end.index);
+        const min_index = self.selection.getMinIndex();
+        const max_index = self.selection.getMaxIndex();
         var number_of_changes_added: usize = 0;
         errdefer for (0..number_of_changes_added) |_| {
             self.removeLastUncommittedChange();
@@ -98,13 +138,11 @@ pub const TaiEditor = struct {
             .player_1 => .player_1,
             .player_2 => .player_2,
         };
-        const min_index = @min(self.selection.start.index, self.selection.end.index);
-        const max_index = @max(self.selection.start.index, self.selection.end.index);
         const change = Change{ .move = .{
             .columns = columns,
-            .source_index = min_index,
+            .source_index = self.selection.getMinIndex(),
             .destination_index = destination_min_index,
-            .number_of_rows = max_index - min_index + 1,
+            .number_of_rows = self.selection.getNumberOfRows(),
         } };
         self.addUncommittedChange(&change) catch |err| {
             sdk.misc.error_context.append("Failed to add move rows uncommitted change.", .{});
@@ -113,11 +151,9 @@ pub const TaiEditor = struct {
     }
 
     pub fn swapSides(self: *Self) !void {
-        const min_index = @min(self.selection.start.index, self.selection.end.index);
-        const max_index = @max(self.selection.start.index, self.selection.end.index);
         const change = Change{ .swap_sides = .{
-            .index = min_index,
-            .number_of_rows = max_index - min_index + 1,
+            .index = self.selection.getMinIndex(),
+            .number_of_rows = self.selection.getNumberOfRows(),
         } };
         return self.addUncommittedChange(&change);
     }
@@ -140,8 +176,8 @@ pub const TaiEditor = struct {
             true => &[1]model.PlayerId{self.selection.start.player_id},
             false => &[2]model.PlayerId{ .player_1, .player_2 },
         };
-        const min_index = @min(self.selection.start.index, self.selection.end.index);
-        const max_index = @max(self.selection.start.index, self.selection.end.index);
+        const min_index = self.selection.getMinIndex();
+        const max_index = self.selection.getMaxIndex();
         var number_of_changes_added: usize = 0;
         errdefer for (0..number_of_changes_added) |_| {
             self.removeLastUncommittedChange();
