@@ -61,7 +61,7 @@ pub const TaiTable = struct {
 
         const items: Items = tai.sequence.items;
 
-        if (imgui.igIsWindowFocused(0) and self.state == .idle) {
+        if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows) and self.state == .idle) {
             self.handleKeyboardSelect(items);
             handleEnabledShortcut(enable_player_1, .player_1);
             handleEnabledShortcut(enable_player_2, .player_2);
