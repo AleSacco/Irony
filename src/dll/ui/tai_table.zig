@@ -52,6 +52,9 @@ pub const TaiTable = struct {
         enable_player_1: *bool,
         enable_player_2: *bool,
     ) void {
+        defer self.previous_frame_index = controller.getCurrentFrameIndex();
+        defer self.previous_selection = self.editor.selection;
+
         const table_flags = imgui.ImGuiTableFlags_ScrollY | imgui.ImGuiTableFlags_Borders;
         const is_rendered = imgui.igBeginTable("sequence", 7, table_flags, .{}, 0);
         if (!is_rendered) {
@@ -193,15 +196,13 @@ pub const TaiTable = struct {
         };
 
         self.syncWithController(controller, items);
+        self.keepSelectionVisible(&clipper);
     }
 
     fn syncWithController(self: *Self, controller: *core.Controller, items: Items) void {
         const current_hovered_index: ?usize = if (imgui.igTableGetHoveredRow() > 0) block: {
             break :block @intCast(imgui.igTableGetHoveredRow() - 1);
         } else null;
-
-        defer self.previous_frame_index = controller.getCurrentFrameIndex();
-        defer self.previous_selection = self.editor.selection;
         defer self.previous_hovered_index = current_hovered_index;
 
         if (controller.mode != .pause) {
@@ -211,8 +212,7 @@ pub const TaiTable = struct {
         const current_frame_index = controller.getCurrentFrameIndex();
         const current_selection = self.editor.selection;
         if (current_frame_index != self.previous_frame_index) {
-            const index_maybe = current_frame_index;
-            if (index_maybe) |index| {
+            if (current_frame_index) |index| {
                 if (index < items.len) {
                     self.editor.selection = .{
                         .start = .{ .index = index, .player_id = .player_1 },
@@ -227,21 +227,39 @@ pub const TaiTable = struct {
                 self.frame_index_before_hover = controller.getCurrentFrameIndex();
             }
         }
-        if (current_hovered_index != self.previous_hovered_index) {
-            const index_maybe = current_hovered_index;
-            if (index_maybe) |index| {
-                if (index < controller.getTotalFrames() and index < items.len) {
-                    controller.setCurrentFrameIndex(index);
-                }
+
+        if (current_hovered_index) |index| {
+            const mouse_moved = !std.meta.eql(imgui.igGetIO_Nil().*.MouseDelta, imgui.ImVec2{ .x = 0, .y = 0 });
+            const scroll_moved = imgui.igGetIO_Nil().*.MouseWheel != 0;
+            if ((mouse_moved or scroll_moved) and index < controller.getTotalFrames() and index < items.len) {
+                controller.setCurrentFrameIndex(index);
             }
-        }
-        if (current_hovered_index == null) {
+        } else {
             if (self.previous_hovered_index != null) {
                 if (self.frame_index_before_hover) |index| {
                     controller.setCurrentFrameIndex(index);
                 }
             }
             self.frame_index_before_hover = controller.getCurrentFrameIndex();
+        }
+    }
+
+    fn keepSelectionVisible(self: *Self, clipper: *const imgui.ImGuiListClipper) void {
+        if (std.meta.eql(self.editor.selection, self.previous_selection)) {
+            return;
+        }
+        const index = self.editor.selection.end.index;
+        if (clipper.DisplayEnd < 0 or clipper.DisplayEnd < 2) {
+            return;
+        }
+        const min_visible_index: usize = @intCast(clipper.DisplayStart + 1);
+        const max_visible_index: usize = @intCast(clipper.DisplayEnd - 2);
+        if (index < min_visible_index) {
+            const top_row_index: f32 = @floatFromInt(index -| 1);
+            imgui.igSetScrollY_Float(top_row_index * clipper.ItemsHeight);
+        } else if (index > max_visible_index) {
+            const top_row_index: f32 = @floatFromInt(index +| min_visible_index -| max_visible_index -| 1);
+            imgui.igSetScrollY_Float(top_row_index * clipper.ItemsHeight);
         }
     }
 
