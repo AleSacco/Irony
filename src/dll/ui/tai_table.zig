@@ -8,8 +8,10 @@ const ui = @import("root.zig");
 pub const TaiTable = struct {
     editor: ui.TaiEditor,
     state: State,
-    previous_selection: ui.TaiEditor.Selection = .initial,
-    previous_frame_index: ?usize = null,
+    previous_selection: ui.TaiEditor.Selection,
+    previous_frame_index: ?usize,
+    previous_hovered_index: ?usize,
+    frame_index_before_hover: ?usize,
 
     const Self = @This();
     const State = union(enum) {
@@ -32,6 +34,10 @@ pub const TaiTable = struct {
         return .{
             .editor = .init(allocator),
             .state = .idle,
+            .previous_selection = .initial,
+            .previous_frame_index = null,
+            .previous_hovered_index = null,
+            .frame_index_before_hover = null,
         };
     }
 
@@ -46,9 +52,6 @@ pub const TaiTable = struct {
         enable_player_1: *bool,
         enable_player_2: *bool,
     ) void {
-        defer self.previous_frame_index = controller.getCurrentFrameIndex();
-        defer self.previous_selection = self.editor.selection;
-
         const table_flags = imgui.ImGuiTableFlags_ScrollY | imgui.ImGuiTableFlags_Borders;
         const is_rendered = imgui.igBeginTable("sequence", 7, table_flags, .{}, 0);
         if (!is_rendered) {
@@ -189,13 +192,22 @@ pub const TaiTable = struct {
             self.editor.discardUncommitted();
         };
 
-        self.syncSelectionWithController(controller, items);
+        self.syncWithController(controller, items);
     }
 
-    fn syncSelectionWithController(self: *Self, controller: *core.Controller, items: Items) void {
+    fn syncWithController(self: *Self, controller: *core.Controller, items: Items) void {
+        const current_hovered_index: ?usize = if (imgui.igTableGetHoveredRow() > 0) block: {
+            break :block @intCast(imgui.igTableGetHoveredRow() - 1);
+        } else null;
+
+        defer self.previous_frame_index = controller.getCurrentFrameIndex();
+        defer self.previous_selection = self.editor.selection;
+        defer self.previous_hovered_index = current_hovered_index;
+
         if (controller.mode != .pause) {
             return;
         }
+
         const current_frame_index = controller.getCurrentFrameIndex();
         const current_selection = self.editor.selection;
         if (current_frame_index != self.previous_frame_index) {
@@ -212,7 +224,24 @@ pub const TaiTable = struct {
             const index = current_selection.end.index;
             if (index < controller.getTotalFrames() and index < items.len) {
                 controller.setCurrentFrameIndex(index);
+                self.frame_index_before_hover = controller.getCurrentFrameIndex();
             }
+        }
+        if (current_hovered_index != self.previous_hovered_index) {
+            const index_maybe = current_hovered_index;
+            if (index_maybe) |index| {
+                if (index < controller.getTotalFrames() and index < items.len) {
+                    controller.setCurrentFrameIndex(index);
+                }
+            }
+        }
+        if (current_hovered_index == null) {
+            if (self.previous_hovered_index != null) {
+                if (self.frame_index_before_hover) |index| {
+                    controller.setCurrentFrameIndex(index);
+                }
+            }
+            self.frame_index_before_hover = controller.getCurrentFrameIndex();
         }
     }
 
