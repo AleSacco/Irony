@@ -64,21 +64,6 @@ pub const TaiTable = struct {
 
         const items: Items = tai.sequence.items;
 
-        if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows) and self.state == .idle) {
-            self.handleKeyboardSelect(items);
-            handleEnabledShortcut(enable_player_1, .player_1);
-            handleEnabledShortcut(enable_player_2, .player_2);
-            handleMenuShortcut();
-            self.handleUndoShortcut(tai);
-            self.handleRedoShortcut(tai);
-            self.handleImportShortcut(tai, controller);
-            self.handleClearShortcut(tai);
-            self.handleMoveShortcut(items);
-            self.handleSwapShortcut();
-            self.handleInsertShortcut();
-            self.handleDeleteShortcut();
-        }
-
         imgui.igTableSetupScrollFreeze(0, 1);
         imgui.igTableSetupColumn("move", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
         imgui.igTableSetupColumn("player_1_input", imgui.ImGuiTableColumnFlags_WidthStretch, 0, 0);
@@ -142,9 +127,11 @@ pub const TaiTable = struct {
 
         const number_of_rows = std.math.lossyCast(c_int, tai.sequence.items.len +| 1);
         var clipper = imgui.ImGuiListClipper{};
-        imgui.ImGuiListClipper_Begin(&clipper, number_of_rows, -1);
+        var last_clipper = clipper;
+        imgui.ImGuiListClipper_Begin(&clipper, number_of_rows, imgui.igGetTextLineHeightWithSpacing());
         defer imgui.ImGuiListClipper_End(&clipper);
         while (imgui.ImGuiListClipper_Step(&clipper)) {
+            last_clipper = clipper;
             var c_index = clipper.DisplayStart;
             while (c_index < clipper.DisplayEnd) : (c_index += 1) {
                 imgui.igPushID_Int(c_index);
@@ -187,7 +174,21 @@ pub const TaiTable = struct {
         }
 
         self.handleMouseSelect();
-        self.handleMouseMove(&clipper);
+        self.handleMouseMove(&last_clipper);
+        if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows) and self.state == .idle) {
+            self.handleKeyboardSelect(items);
+            handleEnabledShortcut(enable_player_1, .player_1);
+            handleEnabledShortcut(enable_player_2, .player_2);
+            handleMenuShortcut();
+            self.handleUndoShortcut(tai);
+            self.handleRedoShortcut(tai);
+            self.handleImportShortcut(tai, controller);
+            self.handleClearShortcut(tai);
+            self.handleMoveShortcut(items);
+            self.handleSwapShortcut();
+            self.handleInsertShortcut();
+            self.handleDeleteShortcut();
+        }
 
         self.editor.commit(tai) catch |err| {
             sdk.misc.error_context.append("Failed to commit tool assisted input change.", .{});
@@ -196,7 +197,7 @@ pub const TaiTable = struct {
         };
 
         self.syncWithController(controller, items);
-        self.keepSelectionVisible(&clipper);
+        self.keepSelectionVisible(&last_clipper);
     }
 
     fn syncWithController(self: *Self, controller: *core.Controller, items: Items) void {
@@ -245,15 +246,12 @@ pub const TaiTable = struct {
     }
 
     fn keepSelectionVisible(self: *Self, clipper: *const imgui.ImGuiListClipper) void {
-        if (std.meta.eql(self.editor.selection, self.previous_selection)) {
+        if (self.state != .idle or std.meta.eql(self.editor.selection, self.previous_selection)) {
             return;
         }
         const index = self.editor.selection.end.index;
-        if (clipper.DisplayEnd < 0 or clipper.DisplayEnd < 2) {
-            return;
-        }
-        const min_visible_index: usize = @intCast(clipper.DisplayStart + 1);
-        const max_visible_index: usize = @intCast(clipper.DisplayEnd - 2);
+        const min_visible_index = std.math.cast(usize, clipper.DisplayStart +| 1) orelse 0;
+        const max_visible_index = std.math.cast(usize, clipper.DisplayEnd -| 2) orelse 0;
         if (index < min_visible_index) {
             const top_row_index: f32 = @floatFromInt(index -| 1);
             imgui.igSetScrollY_Float(top_row_index * clipper.ItemsHeight);
