@@ -210,7 +210,10 @@ pub const TaiEditor = struct {
     fn addUncommittedChange(self: *Self, change: *const Change) !void {
         const is_first_change = self.uncommitted.items.len == 0;
         if (is_first_change) {
-            const checkpoint = Change{ .checkpoint = .{ .selection = self.selection } };
+            const checkpoint = Change{ .checkpoint = .{
+                .selection_before = self.selection,
+                .selection_after = null,
+            } };
             self.uncommitted.append(self.allocator, checkpoint) catch |err| {
                 sdk.misc.error_context.new("Failed to append first change checkpoint to uncommitted changes.", .{});
                 return err;
@@ -248,11 +251,11 @@ pub const TaiEditor = struct {
             var index = number_of_changes_applied;
             while (index > 0) : (index -= 1) {
                 const change = &self.uncommitted.items[index - 1];
-                change.undo(tai) catch unreachable;
+                change.undo(tai, &self.selection) catch unreachable;
             }
         }
         for (self.uncommitted.items, 0..) |*change, change_index| {
-            change.apply(tai) catch |err| {
+            change.apply(tai, &self.selection) catch |err| {
                 sdk.misc.error_context.append("Failed to apply uncommitted change at index: {}", .{change_index});
                 return err;
             };
@@ -287,12 +290,8 @@ pub const TaiEditor = struct {
             var index = self.undo_stack.items.len;
             while (index > 0) : (index -= 1) {
                 count += 1;
-                switch (self.undo_stack.items[index - 1]) {
-                    .checkpoint => |*checkpoint| {
-                        self.selection = checkpoint.selection;
-                        break;
-                    },
-                    else => {},
+                if (self.undo_stack.items[index - 1] == .checkpoint) {
+                    break;
                 }
             }
             break :block count;
@@ -304,13 +303,13 @@ pub const TaiEditor = struct {
         var number_of_changes_undone: usize = 0;
         errdefer for (0..number_of_changes_undone) |_| {
             var change = self.redo_stack.pop() orelse unreachable;
-            change.apply(tai) catch unreachable;
+            change.apply(tai, &self.selection) catch unreachable;
             self.undo_stack.appendAssumeCapacity(change);
         };
         for (0..number_of_changes_to_undo) |change_number| {
             const change = self.undo_stack.pop() orelse unreachable;
             errdefer self.undo_stack.appendAssumeCapacity(change);
-            change.undo(tai) catch |err| {
+            change.undo(tai, &self.selection) catch |err| {
                 sdk.misc.error_context.append("Failed to undo change: {}", .{change_number});
                 return err;
             };
@@ -335,15 +334,11 @@ pub const TaiEditor = struct {
             var is_first_checkpoint = true;
             var index = self.redo_stack.items.len;
             while (index > 0) : (index -= 1) {
-                switch (self.redo_stack.items[index - 1]) {
-                    .checkpoint => |*checkpoint| {
-                        if (!is_first_checkpoint) {
-                            break;
-                        }
-                        self.selection = checkpoint.selection;
-                        is_first_checkpoint = false;
-                    },
-                    else => {},
+                if (self.redo_stack.items[index - 1] == .checkpoint) {
+                    if (!is_first_checkpoint) {
+                        break;
+                    }
+                    is_first_checkpoint = false;
                 }
                 count += 1;
             }
@@ -356,13 +351,13 @@ pub const TaiEditor = struct {
         var number_of_changes_redone: usize = 0;
         errdefer for (0..number_of_changes_redone) |_| {
             const change = self.undo_stack.pop() orelse unreachable;
-            change.undo(tai) catch unreachable;
+            change.undo(tai, &self.selection) catch unreachable;
             self.redo_stack.appendAssumeCapacity(change);
         };
         for (0..number_of_changes_to_redo) |change_number| {
             var change = self.redo_stack.pop() orelse unreachable;
             errdefer self.redo_stack.appendAssumeCapacity(change);
-            change.apply(tai) catch |err| {
+            change.apply(tai, &self.selection) catch |err| {
                 sdk.misc.error_context.append("Failed to redo change: {}", .{change_number});
                 return err;
             };
@@ -404,9 +399,9 @@ const Change = union(enum) {
     swap_sides: SwapSides,
     set_value: SetValue,
 
-    pub fn apply(self: *Change, tai: *core.ToolAssistedInput) !void {
+    pub fn apply(self: *Change, tai: *core.ToolAssistedInput, selection: *TaiEditor.Selection) !void {
         (switch (self.*) {
-            .checkpoint => {},
+            .checkpoint => |*checkpoint| checkpoint.apply(selection),
             .insert_row => |*insert_row| insert_row.apply(tai),
             .delete_row => |*delete_row| delete_row.apply(tai),
             .move => |*move| move.apply(tai),
@@ -418,9 +413,9 @@ const Change = union(enum) {
         };
     }
 
-    pub fn undo(self: *const Change, tai: *core.ToolAssistedInput) !void {
+    pub fn undo(self: *const Change, tai: *core.ToolAssistedInput, selection: *TaiEditor.Selection) !void {
         (switch (self.*) {
-            .checkpoint => {},
+            .checkpoint => |*checkpoint| checkpoint.undo(selection),
             .insert_row => |*insert_row| insert_row.undo(tai),
             .delete_row => |*delete_row| delete_row.undo(tai),
             .move => |*move| move.undo(tai),
@@ -433,7 +428,20 @@ const Change = union(enum) {
     }
 
     pub const Checkpoint = struct {
-        selection: TaiEditor.Selection,
+        selection_before: TaiEditor.Selection,
+        selection_after: ?TaiEditor.Selection,
+
+        pub fn apply(self: *Checkpoint, selection: *TaiEditor.Selection) void {
+            if (self.selection_after) |selection_after| {
+                selection.* = selection_after;
+            } else {
+                self.selection_after = selection.*;
+            }
+        }
+
+        pub fn undo(self: *const Checkpoint, selection: *TaiEditor.Selection) void {
+            selection.* = self.selection_before;
+        }
     };
     pub const InsertRow = struct {
         index: usize,
@@ -763,6 +771,84 @@ test "canUndo and canRedo should return correct values" {
 
     try testing.expectEqual(true, editor.canUndo());
     try testing.expectEqual(false, editor.canRedo());
+}
+
+test "undo and redo should set the selection to the correct value" {
+    var editor = TaiEditor.init(testing.allocator);
+    defer editor.deinit();
+    var tai = core.ToolAssistedInput.init(testing.allocator);
+    defer tai.deinit();
+
+    editor.selection = .{
+        .start = .{ .index = 0, .player_id = .player_1 },
+        .end = .{ .index = 0, .player_id = .player_1 },
+    };
+    try editor.insertRows();
+    editor.selection = .{
+        .start = .{ .index = 0, .player_id = .player_2 },
+        .end = .{ .index = 0, .player_id = .player_2 },
+    };
+    try editor.commit(&tai);
+
+    editor.selection = .{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 1, .player_id = .player_1 },
+    };
+    try editor.insertRows();
+    try editor.insertRows();
+    editor.selection = .{
+        .start = .{ .index = 1, .player_id = .player_2 },
+        .end = .{ .index = 1, .player_id = .player_2 },
+    };
+    try editor.commit(&tai);
+
+    editor.selection = .{
+        .start = .{ .index = 2, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_1 },
+    };
+    try editor.insertRows();
+    try editor.insertRows();
+    try editor.insertRows();
+    editor.selection = .{
+        .start = .{ .index = 2, .player_id = .player_2 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    };
+    try editor.commit(&tai);
+
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 2, .player_id = .player_2 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    }, editor.selection);
+    try editor.undo(&tai);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 2, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_1 },
+    }, editor.selection);
+    try editor.undo(&tai);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 1, .player_id = .player_1 },
+    }, editor.selection);
+    try editor.undo(&tai);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 0, .player_id = .player_1 },
+        .end = .{ .index = 0, .player_id = .player_1 },
+    }, editor.selection);
+    try editor.redo(&tai);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 0, .player_id = .player_2 },
+        .end = .{ .index = 0, .player_id = .player_2 },
+    }, editor.selection);
+    try editor.redo(&tai);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_2 },
+        .end = .{ .index = 1, .player_id = .player_2 },
+    }, editor.selection);
+    try editor.redo(&tai);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 2, .player_id = .player_2 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    }, editor.selection);
 }
 
 test "insertRows should insert empty rows at selected indices" {
