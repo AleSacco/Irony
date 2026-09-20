@@ -49,7 +49,7 @@ pub const TaiTable = struct {
         defer self.previous_frame_index = controller.getCurrentFrameIndex();
         defer self.previous_selection = self.editor.selection;
 
-        const table_flags = imgui.ImGuiTableFlags_ScrollY | imgui.ImGuiTableFlags_RowBg | imgui.ImGuiTableFlags_Borders;
+        const table_flags = imgui.ImGuiTableFlags_ScrollY | imgui.ImGuiTableFlags_Borders;
         const is_rendered = imgui.igBeginTable("sequence", 7, table_flags, .{}, 0);
         if (!is_rendered) {
             return;
@@ -146,24 +146,29 @@ pub const TaiTable = struct {
                 imgui.igTableNextRow(0, 0);
 
                 const index = std.math.cast(usize, c_index) orelse break;
+                const frame_maybe = if (index < items.len) controller.getFrameAt(index) else null;
 
                 if (imgui.igTableNextColumn() and index < items.len) {
                     self.drawMoveButton(index);
                 }
                 if (imgui.igTableNextColumn()) {
-                    self.drawInputCellContent(.player_1, index, items, controller);
+                    self.drawInputCellContent(.player_1, index, items, frame_maybe);
                 }
                 if (imgui.igTableNextColumn() and index < items.len) {
-                    drawAnimationFrameCellContent(.player_1, index, controller);
+                    if (frame_maybe) |frame| {
+                        drawAnimationFrameCellContent(.player_1, index, frame);
+                    }
                 }
                 if (imgui.igTableNextColumn() and index < items.len) {
                     self.drawSwapButton(index, items);
                 }
                 if (imgui.igTableNextColumn() and index < items.len) {
-                    drawAnimationFrameCellContent(.player_2, index, controller);
+                    if (frame_maybe) |frame| {
+                        drawAnimationFrameCellContent(.player_2, index, frame);
+                    }
                 }
                 if (imgui.igTableNextColumn()) {
-                    self.drawInputCellContent(.player_2, index, items, controller);
+                    self.drawInputCellContent(.player_2, index, items, frame_maybe);
                 }
                 if (imgui.igTableNextColumn()) {
                     self.drawInsertButton(index);
@@ -216,7 +221,7 @@ pub const TaiTable = struct {
         player_id: model.PlayerId,
         index: usize,
         items: Items,
-        controller: *const core.Controller,
+        frame_maybe: ?*const model.Frame,
     ) void {
         const CellType = enum { normal, selected, active };
         const cell_type: CellType = block: {
@@ -232,25 +237,22 @@ pub const TaiTable = struct {
             }
             break :block .selected;
         };
-        switch (cell_type) {
-            .normal => {},
-            .selected => {
-                const color = imgui.igGetStyle().*.Colors[imgui.ImGuiCol_HeaderHovered];
-                const color_u32 = imgui.igGetColorU32_Vec4(color);
-                imgui.igTableSetBgColor(imgui.ImGuiTableBgTarget_CellBg, color_u32, -1);
-            },
-            .active => {
-                const color = imgui.igGetStyle().*.Colors[imgui.ImGuiCol_HeaderActive];
-                const color_u32 = imgui.igGetColorU32_Vec4(color);
-                imgui.igTableSetBgColor(imgui.ImGuiTableBgTarget_CellBg, color_u32, -1);
-            },
-        }
+        const cell_color = switch (cell_type) {
+            .normal => if (frame_maybe) |frame| block: {
+                break :block switch (frame.getPlayerById(player_id).can_interact orelse true) {
+                    true => imgui.igGetStyle().*.Colors[imgui.ImGuiCol_TableRowBg],
+                    false => imgui.igGetStyle().*.Colors[imgui.ImGuiCol_TableRowBgAlt],
+                };
+            } else imgui.igGetStyle().*.Colors[imgui.ImGuiCol_TableRowBg],
+            .selected => imgui.igGetStyle().*.Colors[imgui.ImGuiCol_HeaderHovered],
+            .active => imgui.igGetStyle().*.Colors[imgui.ImGuiCol_HeaderActive],
+        };
+        imgui.igTableSetBgColor(imgui.ImGuiTableBgTarget_CellBg, imgui.igGetColorU32_Vec4(cell_color), -1);
 
         const added_color = imgui.ImVec4{ .x = 0.5, .y = 1, .z = 0.5, .w = 1 };
         const removed_color = imgui.ImVec4{ .x = 1, .y = 0.5, .z = 0.5, .w = 0.3 };
-        const recording_frame_maybe = controller.getFrameAt(index);
         if (index >= items.len) {
-            if (recording_frame_maybe != null) {
+            if (frame_maybe != null) {
                 imgui.igTextColored(removed_color, "...");
             }
             return;
@@ -264,8 +266,8 @@ pub const TaiTable = struct {
             const text = std.fmt.bufPrintZ(&table_buffer, "{f}", .{table_input}) catch "error";
             break :block if (text.len > 0) text else "---";
         };
-        if (recording_frame_maybe) |recording_frame| {
-            const recording_input: model.Input = recording_frame.getPlayerById(player_id).input orelse .{};
+        if (frame_maybe) |frame| {
+            const recording_input: model.Input = frame.getPlayerById(player_id).input orelse .{};
             if (table_input.equalsIgnoringLeftRight(recording_input)) {
                 imgui.igText("%s", table_text.ptr);
             } else {
@@ -283,12 +285,7 @@ pub const TaiTable = struct {
         }
     }
 
-    fn drawAnimationFrameCellContent(
-        player_id: model.PlayerId,
-        index: usize,
-        controller: *const core.Controller,
-    ) void {
-        const frame = controller.getFrameAt(index) orelse return;
+    fn drawAnimationFrameCellContent(player_id: model.PlayerId, index: usize, frame: *const model.Frame) void {
         const player: *const model.Player = frame.getPlayerById(player_id);
 
         if (player.move_phase) |move_phase| {
@@ -311,11 +308,7 @@ pub const TaiTable = struct {
             imgui.igGetContentRegionAvail(&available_size);
             const offset = @max(0, 0.5 * (available_size.x - text_size.x));
             imgui.igSetCursorPosX(imgui.igGetCursorPosX() + offset);
-            const color: imgui.ImVec4 = switch (player.can_interact orelse true) {
-                true => .{ .x = 1, .y = 1, .z = 1, .w = 1 },
-                false => .{ .x = 0.6, .y = 0.6, .z = 0.6, .w = 1 },
-            };
-            imgui.igTextColored(color, "%s", text.ptr);
+            imgui.igText("%s", text.ptr);
         }
 
         const cell_hovered = imgui.igTableGetHoveredColumn() == imgui.igTableGetColumnIndex() and
