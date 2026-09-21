@@ -440,6 +440,8 @@ pub const TaiTable = struct {
             } else if (mods == imgui.ImGuiMod_Shift) {
                 self.state = .selecting;
                 self.editor.selection.end = cell;
+            } else if (mods == imgui.ImGuiMod_Alt and self.editor.selection.isCellInside(player_id, index)) {
+                self.state = .{ .moving = .{ .handle_index = index } };
             }
         } else if (self.state == .selecting) {
             self.editor.selection.end = cell;
@@ -801,19 +803,19 @@ pub const TaiTable = struct {
                 },
                 false => .row,
             };
-            var buffer: [64]u8 = undefined;
+            var buffer: [128]u8 = undefined;
             const text = switch (things) {
                 .row => "Move Row",
-                .selected_row => "Move Selected Row [Alt + Up/Down]",
+                .selected_row => "Move Selected Row [Alt + Up/Down] [Alt + Left Click Drag]",
                 .selected_rows => |n| std.fmt.bufPrintZ(
                     &buffer,
-                    "Move {} Selected Rows [Alt + Up/Down]",
+                    "Move {} Selected Rows [Alt + Up/Down] [Alt + Left Click Drag]",
                     .{n},
                 ) catch "error",
-                .selected_value => "Move Selected Value [Alt + Up/Down]",
+                .selected_value => "Move Selected Value [Alt + Up/Down] [Alt + Left Click Drag]",
                 .selected_values => |n| std.fmt.bufPrintZ(
                     &buffer,
-                    "Move {} Selected Values [Alt + Up/Down]",
+                    "Move {} Selected Values [Alt + Up/Down] [Alt + Left Click Drag]",
                     .{n},
                 ) catch "error",
             };
