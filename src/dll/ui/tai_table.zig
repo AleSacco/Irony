@@ -12,7 +12,8 @@ pub const TaiTable = struct {
     previous_frame_index: ?usize,
     previous_hovered_index: ?usize,
     frame_index_before_hover: ?usize,
-    table_body_visible_height: f32,
+    scroll_area_visible_height: f32,
+    player_divide_x: f32,
 
     const Self = @This();
     const State = union(enum) {
@@ -39,7 +40,8 @@ pub const TaiTable = struct {
             .previous_frame_index = null,
             .previous_hovered_index = null,
             .frame_index_before_hover = null,
-            .table_body_visible_height = 0,
+            .scroll_area_visible_height = 0,
+            .player_divide_x = 0,
         };
     }
 
@@ -70,7 +72,7 @@ pub const TaiTable = struct {
             };
             const row_height = imgui.igGetTextLineHeightWithSpacing();
             const frame_padding = imgui.igGetStyle().*.FramePadding.y;
-            self.table_body_visible_height = end_y - start_y - row_height - 2 * frame_padding;
+            self.scroll_area_visible_height = end_y - start_y - row_height - 2 * frame_padding;
         }
 
         const table_flags = imgui.ImGuiTableFlags_ScrollY | imgui.ImGuiTableFlags_Borders;
@@ -113,6 +115,12 @@ pub const TaiTable = struct {
             imgui.igTableHeader("");
         }
         if (imgui.igTableNextColumn()) {
+            var start: imgui.ImVec2 = undefined;
+            imgui.igGetCursorScreenPos(&start);
+            var size: imgui.ImVec2 = undefined;
+            imgui.igGetContentRegionAvail(&size);
+            self.player_divide_x = start.x + 0.5 * size.x;
+
             imgui.igPushID_Str("swap");
             defer imgui.igPopID();
             self.drawSwapButton(null, items);
@@ -192,7 +200,7 @@ pub const TaiTable = struct {
             }
         }
 
-        self.handleMouseSelect();
+        self.handleMouseSelect(&clipper, items);
         self.handleMouseMove(&clipper, items);
         if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows) and self.state == .idle) {
             self.handleKeyboardSelect(items);
@@ -265,7 +273,7 @@ pub const TaiTable = struct {
     }
 
     fn keepSelectionVisible(self: *const Self, clipper: *const imgui.ImGuiListClipper) void {
-        if (self.state != .idle or self.table_body_visible_height <= 0) {
+        if (self.state != .idle or self.scroll_area_visible_height <= 0) {
             return;
         }
         const selection = &self.editor.selection;
@@ -277,7 +285,7 @@ pub const TaiTable = struct {
         const selection_end_top = row_height * @as(f32, @floatFromInt(selection.end.index));
         const selection_height = @abs(selection_end_top - selection_start_top) + row_height;
         const visible_region_top = imgui.igGetScrollY();
-        const visible_region_height = self.table_body_visible_height;
+        const visible_region_height = self.scroll_area_visible_height;
         if (selection_end_top < visible_region_top) {
             const scroll_y = switch (selection_height < visible_region_height) {
                 true => @min(selection_start_top, selection_end_top),
@@ -432,35 +440,50 @@ pub const TaiTable = struct {
         }
     }
 
-    fn handleMouseSelect(self: *Self) void {
-        if (!imgui.igIsMouseDown_Nil(imgui.ImGuiMouseButton_Left)) {
-            if (self.state == .selecting) {
-                self.state = .idle;
-            }
-            return;
-        }
-
-        const player_id: model.PlayerId = switch (imgui.igTableGetHoveredColumn()) {
-            1 => .player_1,
-            5 => .player_2,
-            else => return,
-        };
-        const index = std.math.cast(usize, imgui.igTableGetHoveredRow() -| 1) orelse return;
-        const cell = ui.TaiEditor.Selection.Cell{ .player_id = player_id, .index = index };
-
-        if (imgui.igIsMouseClicked_Bool(imgui.ImGuiMouseButton_Left, false)) {
-            const mods = imgui.igGetIO_Nil().*.KeyMods;
-            if (mods == 0) {
-                self.state = .selecting;
-                self.editor.selection = .{ .start = cell, .end = cell };
-            } else if (mods == imgui.ImGuiMod_Shift) {
-                self.state = .selecting;
-                self.editor.selection.end = cell;
-            } else if (mods == imgui.ImGuiMod_Alt and self.editor.selection.isCellInside(player_id, index)) {
-                self.state = .{ .moving = .{ .handle_index = index } };
-            }
-        } else if (self.state == .selecting) {
-            self.editor.selection.end = cell;
+    fn handleMouseSelect(self: *Self, clipper: *const imgui.ImGuiListClipper, items: Items) void {
+        switch (self.state) {
+            .idle => if (imgui.igIsMouseClicked_Bool(imgui.ImGuiMouseButton_Left, false)) {
+                const player_id: model.PlayerId = switch (imgui.igTableGetHoveredColumn()) {
+                    1, 2 => .player_1,
+                    4, 5 => .player_2,
+                    else => return,
+                };
+                const index = std.math.cast(usize, imgui.igTableGetHoveredRow() -| 1) orelse return;
+                const cell = ui.TaiEditor.Selection.Cell{ .player_id = player_id, .index = index };
+                const mods = imgui.igGetIO_Nil().*.KeyMods;
+                if (mods == 0) {
+                    self.state = .selecting;
+                    self.editor.selection = .{ .start = cell, .end = cell };
+                } else if (mods == imgui.ImGuiMod_Shift) {
+                    self.state = .selecting;
+                    self.editor.selection.end = cell;
+                } else if (mods == imgui.ImGuiMod_Alt and self.editor.selection.isCellInside(player_id, index)) {
+                    self.state = .{ .moving = .{ .handle_index = index } };
+                }
+            },
+            .selecting => {
+                if (!imgui.igIsMouseDown_Nil(imgui.ImGuiMouseButton_Left)) {
+                    self.state = .idle;
+                    return;
+                }
+                var mouse_pos: imgui.ImVec2 = undefined;
+                imgui.igGetMousePos(&mouse_pos);
+                const player_id: model.PlayerId = switch (mouse_pos.x < self.player_divide_x) {
+                    true => .player_1,
+                    false => .player_2,
+                };
+                const float_index = std.math.clamp(
+                    (mouse_pos.y - clipper.StartPosY) / clipper.ItemsHeight,
+                    0,
+                    @as(f32, @floatFromInt(std.math.maxInt(usize))),
+                );
+                var index: usize = @intFromFloat(float_index);
+                if (index > items.len) {
+                    index = items.len;
+                }
+                self.editor.selection.end = .{ .player_id = player_id, .index = index };
+            },
+            else => {},
         }
     }
 
