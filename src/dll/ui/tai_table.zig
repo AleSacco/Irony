@@ -13,7 +13,6 @@ pub const TaiTable = struct {
     previous_hovered_index: ?usize,
     frame_index_before_hover: ?usize,
     scroll_area_visible_height: f32,
-    player_divide_x: f32,
 
     const Self = @This();
     const State = union(enum) {
@@ -31,6 +30,11 @@ pub const TaiTable = struct {
         };
     };
     const Items = []const core.ToolAssistedInput.SequenceItem;
+    const Dimensions = struct {
+        scroll_area_screen_top: f32,
+        scroll_area_visible_height: f32,
+        player_divide_screen_x: f32,
+    };
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
@@ -41,7 +45,6 @@ pub const TaiTable = struct {
             .previous_hovered_index = null,
             .frame_index_before_hover = null,
             .scroll_area_visible_height = 0,
-            .player_divide_x = 0,
         };
     }
 
@@ -59,20 +62,17 @@ pub const TaiTable = struct {
         defer self.previous_frame_index = controller.getCurrentFrameIndex();
         defer self.previous_selection = self.editor.selection;
 
-        const start_y = block: {
+        const frame_padding = imgui.igGetStyle().*.FramePadding.y;
+        const scroll_area_screen_top = block: {
             var vec: imgui.ImVec2 = undefined;
             imgui.igGetCursorScreenPos(&vec);
-            break :block vec.y;
+            const row_height = imgui.igGetTextLineHeightWithSpacing();
+            break :block vec.y + row_height + frame_padding;
         };
         defer {
-            const end_y = block: {
-                var vec: imgui.ImVec2 = undefined;
-                imgui.igGetCursorScreenPos(&vec);
-                break :block vec.y;
-            };
-            const row_height = imgui.igGetTextLineHeightWithSpacing();
-            const frame_padding = imgui.igGetStyle().*.FramePadding.y;
-            self.scroll_area_visible_height = end_y - start_y - row_height - 2 * frame_padding;
+            var vec: imgui.ImVec2 = undefined;
+            imgui.igGetCursorScreenPos(&vec);
+            self.scroll_area_visible_height = vec.y - scroll_area_screen_top - frame_padding;
         }
 
         const table_flags = imgui.ImGuiTableFlags_ScrollY | imgui.ImGuiTableFlags_Borders;
@@ -93,6 +93,7 @@ pub const TaiTable = struct {
         imgui.igTableSetupColumn("player_2_input", imgui.ImGuiTableColumnFlags_WidthStretch, 0, 0);
         imgui.igTableSetupColumn("buttons", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
 
+        var player_divide_screen_x: f32 = 0;
         if (imgui.igTableNextColumn()) {
             imgui.igPushID_Str("move");
             defer imgui.igPopID();
@@ -119,7 +120,7 @@ pub const TaiTable = struct {
             imgui.igGetCursorScreenPos(&start);
             var size: imgui.ImVec2 = undefined;
             imgui.igGetContentRegionAvail(&size);
-            self.player_divide_x = start.x + 0.5 * size.x;
+            player_divide_screen_x = start.x + 0.5 * size.x;
 
             imgui.igPushID_Str("swap");
             defer imgui.igPopID();
@@ -200,7 +201,13 @@ pub const TaiTable = struct {
             }
         }
 
-        self.handleMouseSelect(&clipper, items);
+        const dimensions = Dimensions{
+            .scroll_area_screen_top = scroll_area_screen_top,
+            .scroll_area_visible_height = self.scroll_area_visible_height,
+            .player_divide_screen_x = player_divide_screen_x,
+        };
+
+        self.handleMouseSelect(&clipper, &dimensions, items);
         self.handleMouseMove(&clipper, items);
         if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows) and self.state == .idle) {
             self.handleKeyboardSelect(items);
@@ -224,7 +231,8 @@ pub const TaiTable = struct {
         };
 
         self.syncWithController(controller, items);
-        self.keepSelectionVisible(&clipper);
+        self.keepSelectionVisible(&clipper, &dimensions);
+        self.handleEdgeScrolling(&dimensions);
     }
 
     fn syncWithController(self: *Self, controller: *core.Controller, items: Items) void {
@@ -272,8 +280,12 @@ pub const TaiTable = struct {
         }
     }
 
-    fn keepSelectionVisible(self: *const Self, clipper: *const imgui.ImGuiListClipper) void {
-        if (self.state != .idle or self.scroll_area_visible_height <= 0) {
+    fn keepSelectionVisible(
+        self: *const Self,
+        clipper: *const imgui.ImGuiListClipper,
+        dimensions: *const Dimensions,
+    ) void {
+        if (self.state != .idle or dimensions.scroll_area_visible_height <= 0) {
             return;
         }
         const selection = &self.editor.selection;
@@ -285,7 +297,7 @@ pub const TaiTable = struct {
         const selection_end_top = row_height * @as(f32, @floatFromInt(selection.end.index));
         const selection_height = @abs(selection_end_top - selection_start_top) + row_height;
         const visible_region_top = imgui.igGetScrollY();
-        const visible_region_height = self.scroll_area_visible_height;
+        const visible_region_height = dimensions.scroll_area_visible_height;
         if (selection_end_top < visible_region_top) {
             const scroll_y = switch (selection_height < visible_region_height) {
                 true => @min(selection_start_top, selection_end_top),
@@ -304,6 +316,29 @@ pub const TaiTable = struct {
                 },
             };
             imgui.igSetScrollY_Float(scroll_y);
+        }
+    }
+
+    fn handleEdgeScrolling(self: *const Self, dimensions: *const Dimensions) void {
+        switch (self.state) {
+            .selecting, .moving => {},
+            .idle, .confirming => return,
+        }
+        var mouse_pos: imgui.ImVec2 = undefined;
+        imgui.igGetMousePos(&mouse_pos);
+        const mouse_y = mouse_pos.y;
+        const scroll_area_start = dimensions.scroll_area_screen_top;
+        const scroll_area_end = scroll_area_start + dimensions.scroll_area_visible_height;
+        const speed_factor = 0.0005;
+        const delta_time = imgui.igGetIO_Nil().*.DeltaTime;
+        if (mouse_y < scroll_area_start) {
+            const screen_delta = scroll_area_start - mouse_y;
+            const scroll_delta = speed_factor * screen_delta * screen_delta * screen_delta * screen_delta * delta_time;
+            imgui.igSetScrollY_Float(imgui.igGetScrollY() - scroll_delta);
+        } else if (mouse_y > scroll_area_end) {
+            const screen_delta = mouse_y - scroll_area_end;
+            const scroll_delta = speed_factor * screen_delta * screen_delta * screen_delta * screen_delta * delta_time;
+            imgui.igSetScrollY_Float(imgui.igGetScrollY() + scroll_delta);
         }
     }
 
@@ -440,7 +475,12 @@ pub const TaiTable = struct {
         }
     }
 
-    fn handleMouseSelect(self: *Self, clipper: *const imgui.ImGuiListClipper, items: Items) void {
+    fn handleMouseSelect(
+        self: *Self,
+        clipper: *const imgui.ImGuiListClipper,
+        dimensions: *const Dimensions,
+        items: Items,
+    ) void {
         switch (self.state) {
             .idle => if (imgui.igIsMouseClicked_Bool(imgui.ImGuiMouseButton_Left, false)) {
                 const player_id: model.PlayerId = switch (imgui.igTableGetHoveredColumn()) {
@@ -468,7 +508,7 @@ pub const TaiTable = struct {
                 }
                 var mouse_pos: imgui.ImVec2 = undefined;
                 imgui.igGetMousePos(&mouse_pos);
-                const player_id: model.PlayerId = switch (mouse_pos.x < self.player_divide_x) {
+                const player_id: model.PlayerId = switch (mouse_pos.x < dimensions.player_divide_screen_x) {
                     true => .player_1,
                     false => .player_2,
                 };
