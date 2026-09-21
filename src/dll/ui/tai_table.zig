@@ -12,6 +12,7 @@ pub const TaiTable = struct {
     previous_frame_index: ?usize,
     previous_hovered_index: ?usize,
     frame_index_before_hover: ?usize,
+    table_body_visible_height: f32,
 
     const Self = @This();
     const State = union(enum) {
@@ -38,6 +39,7 @@ pub const TaiTable = struct {
             .previous_frame_index = null,
             .previous_hovered_index = null,
             .frame_index_before_hover = null,
+            .table_body_visible_height = 0,
         };
     }
 
@@ -55,8 +57,24 @@ pub const TaiTable = struct {
         defer self.previous_frame_index = controller.getCurrentFrameIndex();
         defer self.previous_selection = self.editor.selection;
 
+        const start_y = block: {
+            var vec: imgui.ImVec2 = undefined;
+            imgui.igGetCursorScreenPos(&vec);
+            break :block vec.y;
+        };
+        defer {
+            const end_y = block: {
+                var vec: imgui.ImVec2 = undefined;
+                imgui.igGetCursorScreenPos(&vec);
+                break :block vec.y;
+            };
+            const row_height = imgui.igGetTextLineHeightWithSpacing();
+            const frame_padding = imgui.igGetStyle().*.FramePadding.y;
+            self.table_body_visible_height = end_y - start_y - row_height - 2 * frame_padding;
+        }
+
         const table_flags = imgui.ImGuiTableFlags_ScrollY | imgui.ImGuiTableFlags_Borders;
-        const is_rendered = imgui.igBeginTable("sequence", 7, table_flags, .{}, 0);
+        const is_rendered = imgui.igBeginTable("table", 7, table_flags, .{}, 0);
         if (!is_rendered) {
             return;
         }
@@ -127,11 +145,9 @@ pub const TaiTable = struct {
 
         const number_of_rows = std.math.lossyCast(c_int, tai.sequence.items.len +| 1);
         var clipper = imgui.ImGuiListClipper{};
-        var last_clipper = clipper;
         imgui.ImGuiListClipper_Begin(&clipper, number_of_rows, imgui.igGetTextLineHeightWithSpacing());
         defer imgui.ImGuiListClipper_End(&clipper);
         while (imgui.ImGuiListClipper_Step(&clipper)) {
-            last_clipper = clipper;
             var c_index = clipper.DisplayStart;
             while (c_index < clipper.DisplayEnd) : (c_index += 1) {
                 imgui.igPushID_Int(c_index);
@@ -177,7 +193,7 @@ pub const TaiTable = struct {
         }
 
         self.handleMouseSelect();
-        self.handleMouseMove(&last_clipper, items);
+        self.handleMouseMove(&clipper, items);
         if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows) and self.state == .idle) {
             self.handleKeyboardSelect(items);
             handleEnabledShortcut(enable_player_1, .player_1);
@@ -200,7 +216,7 @@ pub const TaiTable = struct {
         };
 
         self.syncWithController(controller, items);
-        self.keepSelectionVisible(&last_clipper);
+        self.keepSelectionVisible(&clipper);
     }
 
     fn syncWithController(self: *Self, controller: *core.Controller, items: Items) void {
@@ -249,37 +265,37 @@ pub const TaiTable = struct {
     }
 
     fn keepSelectionVisible(self: *const Self, clipper: *const imgui.ImGuiListClipper) void {
-        if (self.state != .idle or std.meta.eql(self.editor.selection, self.previous_selection)) {
+        if (self.state != .idle or self.table_body_visible_height <= 0) {
             return;
         }
-
-        const min_visible_index = std.math.cast(usize, clipper.DisplayStart +| 1) orelse 0;
-        const max_visible_index = @max(min_visible_index, std.math.cast(usize, clipper.DisplayEnd -| 2) orelse 0);
-        const number_of_visible_rows = max_visible_index + 1 - min_visible_index;
-
         const selection = &self.editor.selection;
-        const end_index = self.editor.selection.end.index;
-
-        if (end_index < min_visible_index) {
-            const top_row_index = switch (selection.getNumberOfRows() <= number_of_visible_rows) {
-                true => self.editor.selection.getMinIndex(),
-                false => switch (selection.start.index > selection.end.index) {
-                    true => selection.end.index,
-                    false => selection.end.index - number_of_visible_rows,
+        if (std.meta.eql(selection.*, self.previous_selection)) {
+            return;
+        }
+        const row_height = clipper.ItemsHeight;
+        const selection_start_top = row_height * @as(f32, @floatFromInt(selection.start.index));
+        const selection_end_top = row_height * @as(f32, @floatFromInt(selection.end.index));
+        const selection_height = @abs(selection_end_top - selection_start_top) + row_height;
+        const visible_region_top = imgui.igGetScrollY();
+        const visible_region_height = self.table_body_visible_height;
+        if (selection_end_top < visible_region_top) {
+            const scroll_y = switch (selection_height < visible_region_height) {
+                true => @min(selection_start_top, selection_end_top),
+                false => switch (selection_start_top < selection_end_top) {
+                    true => selection_end_top + row_height - visible_region_height,
+                    false => selection_end_top,
                 },
             };
-            const float_top_row_index: f32 = @floatFromInt(top_row_index);
-            imgui.igSetScrollY_Float(float_top_row_index * clipper.ItemsHeight);
-        } else if (end_index > max_visible_index) {
-            const top_row_index = switch (selection.getNumberOfRows() <= number_of_visible_rows) {
-                true => self.editor.selection.getMaxIndex() - number_of_visible_rows,
-                false => switch (selection.start.index < selection.end.index) {
-                    true => selection.end.index - number_of_visible_rows,
-                    false => selection.end.index,
+            imgui.igSetScrollY_Float(scroll_y);
+        } else if (selection_end_top + row_height > visible_region_top + visible_region_height) {
+            const scroll_y = switch (selection_height < visible_region_height) {
+                true => @max(selection_start_top, selection_end_top) + row_height - visible_region_height,
+                false => switch (selection_start_top < selection_end_top) {
+                    true => selection_end_top + row_height - visible_region_height,
+                    false => selection_end_top,
                 },
             };
-            const float_top_row_index: f32 = @floatFromInt(top_row_index);
-            imgui.igSetScrollY_Float(float_top_row_index * clipper.ItemsHeight);
+            imgui.igSetScrollY_Float(scroll_y);
         }
     }
 
