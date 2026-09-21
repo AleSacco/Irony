@@ -248,19 +248,38 @@ pub const TaiTable = struct {
         }
     }
 
-    fn keepSelectionVisible(self: *Self, clipper: *const imgui.ImGuiListClipper) void {
+    fn keepSelectionVisible(self: *const Self, clipper: *const imgui.ImGuiListClipper) void {
         if (self.state != .idle or std.meta.eql(self.editor.selection, self.previous_selection)) {
             return;
         }
-        const index = self.editor.selection.end.index;
+
         const min_visible_index = std.math.cast(usize, clipper.DisplayStart +| 1) orelse 0;
-        const max_visible_index = std.math.cast(usize, clipper.DisplayEnd -| 2) orelse 0;
-        if (index < min_visible_index) {
-            const top_row_index: f32 = @floatFromInt(index -| 1);
-            imgui.igSetScrollY_Float(top_row_index * clipper.ItemsHeight);
-        } else if (index > max_visible_index) {
-            const top_row_index: f32 = @floatFromInt(index +| min_visible_index -| max_visible_index -| 1);
-            imgui.igSetScrollY_Float(top_row_index * clipper.ItemsHeight);
+        const max_visible_index = @max(min_visible_index, std.math.cast(usize, clipper.DisplayEnd -| 2) orelse 0);
+        const number_of_visible_rows = max_visible_index + 1 - min_visible_index;
+
+        const selection = &self.editor.selection;
+        const end_index = self.editor.selection.end.index;
+
+        if (end_index < min_visible_index) {
+            const top_row_index = switch (selection.getNumberOfRows() <= number_of_visible_rows) {
+                true => self.editor.selection.getMinIndex(),
+                false => switch (selection.start.index > selection.end.index) {
+                    true => selection.end.index,
+                    false => selection.end.index - number_of_visible_rows,
+                },
+            };
+            const float_top_row_index: f32 = @floatFromInt(top_row_index);
+            imgui.igSetScrollY_Float(float_top_row_index * clipper.ItemsHeight);
+        } else if (end_index > max_visible_index) {
+            const top_row_index = switch (selection.getNumberOfRows() <= number_of_visible_rows) {
+                true => self.editor.selection.getMaxIndex() - number_of_visible_rows,
+                false => switch (selection.start.index < selection.end.index) {
+                    true => selection.end.index - number_of_visible_rows,
+                    false => selection.end.index,
+                },
+            };
+            const float_top_row_index: f32 = @floatFromInt(top_row_index);
+            imgui.igSetScrollY_Float(float_top_row_index * clipper.ItemsHeight);
         }
     }
 
