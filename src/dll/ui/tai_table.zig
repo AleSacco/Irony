@@ -25,7 +25,7 @@ pub const TaiTable = struct {
             clear,
         };
         pub const Moving = struct {
-            index: usize,
+            handle_index: usize,
         };
     };
     const Items = []const core.ToolAssistedInput.SequenceItem;
@@ -139,13 +139,15 @@ pub const TaiTable = struct {
                 imgui.igTableNextRow(0, 0);
 
                 const index = std.math.cast(usize, c_index) orelse break;
+                const moved_index = self.findSimulatedMoveIndex(index, .destination_to_source, &clipper, items);
                 const frame_maybe = if (index < items.len) controller.getFrameAt(index) else null;
 
-                if (imgui.igTableNextColumn() and index < items.len) {
-                    self.drawMoveButton(index);
+                if (imgui.igTableNextColumn() and moved_index < items.len) {
+                    self.drawMoveButton(moved_index);
                 }
                 if (imgui.igTableNextColumn()) {
-                    self.drawInputCellContent(.player_1, index, items, frame_maybe);
+                    const p1_index = if (self.editor.selection.isPlayerIdInside(.player_1)) moved_index else index;
+                    self.drawInputCellContent(.player_1, p1_index, items, frame_maybe);
                 }
                 if (imgui.igTableNextColumn() and index < items.len) {
                     if (frame_maybe) |frame| {
@@ -161,7 +163,8 @@ pub const TaiTable = struct {
                     }
                 }
                 if (imgui.igTableNextColumn()) {
-                    self.drawInputCellContent(.player_2, index, items, frame_maybe);
+                    const p2_index = if (self.editor.selection.isPlayerIdInside(.player_2)) moved_index else index;
+                    self.drawInputCellContent(.player_2, p2_index, items, frame_maybe);
                 }
                 if (imgui.igTableNextColumn()) {
                     self.drawInsertButton(index);
@@ -174,7 +177,7 @@ pub const TaiTable = struct {
         }
 
         self.handleMouseSelect();
-        self.handleMouseMove(&last_clipper);
+        self.handleMouseMove(&last_clipper, items);
         if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows) and self.state == .idle) {
             self.handleKeyboardSelect(items);
             handleEnabledShortcut(enable_player_1, .player_1);
@@ -737,7 +740,7 @@ pub const TaiTable = struct {
         imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
         defer imgui.igPopStyleVar(1);
 
-        const is_being_moved = self.state == .moving and self.state.moving.index == index;
+        const is_being_moved = self.state == .moving and self.state.moving.handle_index == index;
         if (is_being_moved) {
             const active_color = imgui.igGetStyleColorVec4(imgui.ImGuiCol_ButtonActive).*;
             imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_Button, active_color);
@@ -747,39 +750,149 @@ pub const TaiTable = struct {
             imgui.igPopStyleColor(2);
         };
 
+        const selection = &self.editor.selection;
         _ = imgui.igButton(" ⋯ ###move", .{});
         if (imgui.igIsItemActivated()) {
-            // TODO
+            if (!selection.isIndexInside(index)) {
+                selection.* = .{
+                    .start = .{ .index = index, .player_id = .player_1 },
+                    .end = .{ .index = index, .player_id = .player_2 },
+                };
+            }
+            self.state = .{ .moving = .{ .handle_index = index } };
         }
         if (imgui.igIsItemHovered(0)) {
-            imgui.igSetTooltip("Move Row [Alt + Up/Down]");
+            const Things = union(enum) {
+                row: void,
+                selected_row: void,
+                selected_rows: usize,
+                selected_value: void,
+                selected_values: usize,
+            };
+            const things: Things = switch (selection.isIndexInside(index)) {
+                true => switch (selection.start.player_id == selection.end.player_id) {
+                    true => switch (selection.getNumberOfRows()) {
+                        1 => .selected_value,
+                        else => |n| .{ .selected_values = n },
+                    },
+                    false => switch (selection.getNumberOfRows()) {
+                        1 => .selected_row,
+                        else => |n| .{ .selected_rows = n },
+                    },
+                },
+                false => .row,
+            };
+            var buffer: [64]u8 = undefined;
+            const text = switch (things) {
+                .row => "Move Row",
+                .selected_row => "Move Selected Row [Alt + Up/Down]",
+                .selected_rows => |n| std.fmt.bufPrintZ(
+                    &buffer,
+                    "Move {} Selected Rows [Alt + Up/Down]",
+                    .{n},
+                ) catch "error",
+                .selected_value => "Move Selected Value [Alt + Up/Down]",
+                .selected_values => |n| std.fmt.bufPrintZ(
+                    &buffer,
+                    "Move {} Selected Values [Alt + Up/Down]",
+                    .{n},
+                ) catch "error",
+            };
+            imgui.igSetTooltip("%s", text.ptr);
         }
     }
 
-    fn handleMouseMove(self: *Self, clipper: *const imgui.ImGuiListClipper) void {
-        const source_index = switch (self.state) {
-            .moving => |*moving| moving.index,
-            else => return,
+    fn handleMouseMove(self: *Self, clipper: *const imgui.ImGuiListClipper, items: Items) void {
+        if (self.state != .moving or imgui.igIsMouseDown_Nil(imgui.ImGuiMouseButton_Left)) {
+            return;
+        }
+        defer self.state = .idle;
+        const selection = &self.editor.selection;
+        const source_min_index = selection.getMinIndex();
+        const destination_min_index = self.findSimulatedMoveIndex(
+            source_min_index,
+            .source_to_destination,
+            clipper,
+            items,
+        );
+        if (source_min_index == destination_min_index) {
+            return;
+        }
+        const destination_max_index = destination_min_index + selection.getNumberOfRows() - 1;
+        if (self.editor.move(destination_min_index)) {
+            if (selection.start.index <= selection.end.index) {
+                selection.start.index = destination_min_index;
+                selection.end.index = destination_max_index;
+            } else {
+                selection.start.index = destination_max_index;
+                selection.end.index = destination_min_index;
+            }
+        } else |err| {
+            sdk.misc.error_context.append("Failed move inputs.", .{});
+            sdk.misc.error_context.logError(err);
+        }
+    }
+
+    fn findSimulatedMoveIndex(
+        self: *const Self,
+        index: usize,
+        direction: enum { source_to_destination, destination_to_source },
+        clipper: *const imgui.ImGuiListClipper,
+        items: Items,
+    ) usize {
+        if (items.len == 0) {
+            return index;
+        }
+        const source_handle_index = switch (self.state) {
+            .moving => |*moving| moving.handle_index,
+            else => return index,
         };
-        if (!imgui.igIsMouseDown_Nil(imgui.ImGuiMouseButton_Left)) {
-            self.state = .idle;
-            return;
-        }
-        if (clipper.ItemsHeight <= 0) {
-            return;
-        }
+
         var mouse_pos: imgui.ImVec2 = undefined;
         imgui.igGetMousePos(&mouse_pos);
-        const float_index = std.math.clamp(
+        const float_handle_index = std.math.clamp(
             (mouse_pos.y - clipper.StartPosY) / clipper.ItemsHeight,
             0,
             @as(f32, @floatFromInt(std.math.maxInt(usize))),
         );
-        const destination_index: usize = @intFromFloat(float_index);
-        if (source_index == destination_index) {
-            return;
+        const destination_handle_index: usize = @intFromFloat(float_handle_index);
+
+        if (destination_handle_index == source_handle_index) {
+            return index;
         }
-        // TODO
+
+        const selection = &self.editor.selection;
+        var source_min_index = selection.getMinIndex();
+        var source_max_index = selection.getMaxIndex();
+        const number_of_rows = selection.getNumberOfRows();
+        var destination_min_index = source_min_index + destination_handle_index -| source_handle_index;
+        var destination_max_index = destination_min_index + number_of_rows - 1;
+        if (destination_max_index + 1 > items.len) {
+            destination_min_index = items.len -| number_of_rows;
+            destination_max_index = destination_min_index + number_of_rows - 1;
+        }
+
+        switch (direction) {
+            .source_to_destination => {},
+            .destination_to_source => {
+                std.mem.swap(usize, &source_min_index, &destination_min_index);
+                std.mem.swap(usize, &source_max_index, &destination_max_index);
+            },
+        }
+
+        if (index >= source_min_index and index <= source_max_index) {
+            return index + destination_min_index - source_min_index;
+        }
+        if (source_min_index < destination_min_index) {
+            if (index > source_max_index and index <= destination_max_index) {
+                return index - number_of_rows;
+            }
+        } else {
+            if (index >= destination_min_index and index < source_min_index) {
+                return index + number_of_rows;
+            }
+        }
+        return index;
     }
 
     fn handleMoveShortcut(self: *Self, items: Items) void {
@@ -844,21 +957,33 @@ pub const TaiTable = struct {
             }
         }
         if (imgui.igIsItemHovered(0)) {
-            if (index_maybe) |index| {
-                if (selection.isIndexInside(index)) {
-                    var buffer: [128]u8 = undefined;
-                    const text = std.fmt.bufPrintZ(
-                        &buffer,
-                        "Swap Inputs Inside {} Selected Rows [Alt + Left/Right]",
-                        .{selection.getNumberOfRows()},
-                    ) catch "error";
-                    imgui.igSetTooltip("%s", text.ptr);
-                } else {
-                    imgui.igSetTooltip("Swap Inputs Inside Row");
-                }
-            } else {
-                imgui.igSetTooltip("Swap Inputs Inside All Rows");
-            }
+            const Things = union(enum) {
+                all_rows: void,
+                row: void,
+                selected_row: void,
+                selected_rows: usize,
+            };
+            const things: Things = if (index_maybe) |index| block: {
+                break :block switch (selection.isIndexInside(index)) {
+                    true => switch (selection.getNumberOfRows()) {
+                        1 => .selected_row,
+                        else => |n| .{ .selected_rows = n },
+                    },
+                    false => .row,
+                };
+            } else .all_rows;
+            var buffer: [128]u8 = undefined;
+            const text = switch (things) {
+                .all_rows => "Swap Inputs Inside All Rows",
+                .row => "Swap Inputs Inside Row",
+                .selected_row => "Swap Inputs Inside Selected Row [Alt + Left/Right]",
+                .selected_rows => |n| std.fmt.bufPrintZ(
+                    &buffer,
+                    "Swap Inputs Inside {} Selected Rows [Alt + Left/Right]",
+                    .{n},
+                ) catch "error",
+            };
+            imgui.igSetTooltip("%s", text.ptr);
         }
     }
 
@@ -915,15 +1040,23 @@ pub const TaiTable = struct {
             };
         }
         if (imgui.igIsItemHovered(0)) {
-            const number_of_rows = switch (selection.isIndexInside(index)) {
-                true => selection.getNumberOfRows(),
-                false => 0,
+            const Things = union(enum) {
+                row: void,
+                selected_row: void,
+                selected_rows: usize,
+            };
+            const things: Things = switch (selection.isIndexInside(index)) {
+                true => switch (selection.getNumberOfRows()) {
+                    1 => .selected_row,
+                    else => |n| .{ .selected_rows = n },
+                },
+                false => .row,
             };
             var buffer: [64]u8 = undefined;
-            const text = switch (number_of_rows) {
-                0 => "Insert Row",
-                1 => "Insert 1 Row [Ins]",
-                else => std.fmt.bufPrintZ(&buffer, "Insert {} Rows [Ins]", .{number_of_rows}) catch "error",
+            const text = switch (things) {
+                .row => "Insert Row",
+                .selected_row => "Insert Row [Ins]",
+                .selected_rows => |n| std.fmt.bufPrintZ(&buffer, "Insert {} Rows [Ins]", .{n}) catch "error",
             };
             imgui.igSetTooltip("%s", text.ptr);
         }
@@ -961,15 +1094,23 @@ pub const TaiTable = struct {
             selection.end.index = min_index;
         }
         if (imgui.igIsItemHovered(0)) {
-            const number_of_rows = switch (selection.isIndexInside(index)) {
-                true => selection.getNumberOfRows(),
-                false => 0,
+            const Things = union(enum) {
+                row: void,
+                selected_row: void,
+                selected_rows: usize,
+            };
+            const things: Things = switch (selection.isIndexInside(index)) {
+                true => switch (selection.getNumberOfRows()) {
+                    1 => .selected_row,
+                    else => |n| .{ .selected_rows = n },
+                },
+                false => .row,
             };
             var buffer: [64]u8 = undefined;
-            const text = switch (number_of_rows) {
-                0 => "Delete Row",
-                1 => "Delete 1 Selected Row [Del]",
-                else => std.fmt.bufPrintZ(&buffer, "Delete {} Selected Rows [Del]", .{number_of_rows}) catch "error",
+            const text = switch (things) {
+                .row => "Delete Row",
+                .selected_row => "Delete Selected Row [Del]",
+                .selected_rows => |n| std.fmt.bufPrintZ(&buffer, "Delete {} Selected Rows [Del]", .{n}) catch "error",
             };
             imgui.igSetTooltip("%s", text.ptr);
         }
