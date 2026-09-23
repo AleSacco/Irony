@@ -139,10 +139,13 @@ pub const Ui = struct {
     }
 
     fn handleOpenKey(self: *Self) void {
-        const correct_mods = imgui.igGetIO_Nil().*.KeyMods == 0;
-        const key_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Tab, false);
-        if (correct_mods and key_pressed) {
-            self.is_open = !self.is_open;
+        const mods = imgui.igGetIO_Nil().*.KeyMods;
+        if (mods != 0 and mods != imgui.ImGuiMod_Shift) {
+            return;
         }
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Tab, false)) {
+            return;
+        }
+        self.is_open = !self.is_open;
     }
 };

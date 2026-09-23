@@ -20,6 +20,7 @@ pub const TaiTable = struct {
         confirming: Confirming,
         selecting: void,
         moving: Moving,
+        editing: Editing,
 
         pub const Confirming = enum {
             import,
@@ -27,6 +28,14 @@ pub const TaiTable = struct {
         };
         pub const Moving = struct {
             handle_index: usize,
+        };
+        pub const Editing = struct {
+            text_buffer: [buffer_size]u8,
+            select_all: bool,
+            input_activated: bool = false,
+
+            pub const buffer_size = 32;
+            pub const empty_buffer = [1]u8{0} ** buffer_size;
         };
     };
     const Items = []const core.ToolAssistedInput.SequenceItem;
@@ -207,13 +216,18 @@ pub const TaiTable = struct {
             .player_divide_screen_x = player_divide_screen_x,
         };
 
+        self.handleMouseEdit(items);
         self.handleMouseSelect(&clipper, &dimensions, items);
         self.handleMouseMove(&clipper, items);
-        if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows) and self.state == .idle) {
+        if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows)) {
             self.handleKeyboardSelect(items);
-            handleEnabledShortcut(enable_player_1, .player_1);
-            handleEnabledShortcut(enable_player_2, .player_2);
-            handleMenuShortcut();
+            self.handleCancelShortcut();
+            self.handleClearValuesShortcut(items);
+            self.handleEditShortcut(items);
+            self.handleConfirmEditShortcut(items);
+            self.handleEnabledShortcut(enable_player_1, .player_1);
+            self.handleEnabledShortcut(enable_player_2, .player_2);
+            self.handleMenuShortcut();
             self.handleUndoShortcut(tai);
             self.handleRedoShortcut(tai);
             self.handleImportShortcut(tai, controller);
@@ -285,13 +299,18 @@ pub const TaiTable = struct {
         clipper: *const imgui.ImGuiListClipper,
         dimensions: *const Dimensions,
     ) void {
-        if (self.state != .idle or dimensions.scroll_area_visible_height <= 0) {
-            return;
+        switch (self.state) {
+            .idle => switch (std.meta.eql(self.editor.selection, self.previous_selection)) {
+                true => return,
+                false => {},
+            },
+            .editing => |*editing| switch (editing.input_activated) {
+                true => return,
+                false => {},
+            },
+            .selecting, .moving, .confirming => return,
         }
         const selection = &self.editor.selection;
-        if (std.meta.eql(selection.*, self.previous_selection)) {
-            return;
-        }
         const row_height = clipper.ItemsHeight;
         const selection_start_top = row_height * @as(f32, @floatFromInt(selection.start.index));
         const selection_end_top = row_height * @as(f32, @floatFromInt(selection.end.index));
@@ -322,7 +341,7 @@ pub const TaiTable = struct {
     fn handleEdgeScrolling(self: *const Self, dimensions: *const Dimensions) void {
         switch (self.state) {
             .selecting, .moving => {},
-            .idle, .confirming => return,
+            .idle, .confirming, .editing => return,
         }
         var mouse_pos: imgui.ImVec2 = undefined;
         imgui.igGetMousePos(&mouse_pos);
@@ -371,6 +390,22 @@ pub const TaiTable = struct {
         };
         imgui.igTableSetBgColor(imgui.ImGuiTableBgTarget_CellBg, imgui.igGetColorU32_Vec4(cell_color), -1);
 
+        switch (self.state) {
+            .editing => |*editing| switch (cell_type) {
+                .normal => drawInputCellText(player_id, index, items, frame_maybe),
+                .selected => imgui.igText("%s", &editing.text_buffer),
+                .active => self.drawInputCellEditWidget(editing),
+            },
+            else => drawInputCellText(player_id, index, items, frame_maybe),
+        }
+    }
+
+    fn drawInputCellText(
+        player_id: model.PlayerId,
+        index: usize,
+        items: Items,
+        frame_maybe: ?*const model.Frame,
+    ) void {
         const added_color = imgui.ImVec4{ .x = 0.5, .y = 1, .z = 0.5, .w = 1 };
         const removed_color = imgui.ImVec4{ .x = 1, .y = 0.5, .z = 0.5, .w = 0.3 };
         if (index >= items.len) {
@@ -404,6 +439,51 @@ pub const TaiTable = struct {
             }
         } else {
             imgui.igTextColored(added_color, "%s", table_text.ptr);
+        }
+    }
+
+    fn drawInputCellEditWidget(self: *Self, editing: *State.Editing) void {
+        imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
+        defer imgui.igPopStyleVar(1);
+        const Callbacks = struct {
+            fn selectAll(data: [*c]imgui.ImGuiInputTextCallbackData) callconv(.c) c_int {
+                data[0].CursorPos = data[0].BufTextLen;
+                data[0].SelectionStart = 0;
+                data[0].SelectionEnd = data[0].BufTextLen;
+                return 0;
+            }
+            fn selectNone(data: [*c]imgui.ImGuiInputTextCallbackData) callconv(.c) c_int {
+                data[0].CursorPos = data[0].BufTextLen;
+                data[0].SelectionStart = data[0].BufTextLen;
+                data[0].SelectionEnd = data[0].BufTextLen;
+                return 0;
+            }
+        };
+        if (!editing.input_activated) {
+            imgui.igSetKeyboardFocusHere(0);
+        }
+        imgui.igSetNextItemWidth(-1);
+
+        const callback: imgui.ImGuiInputTextCallback = switch (editing.input_activated) {
+            true => null,
+            false => switch (editing.select_all) {
+                true => Callbacks.selectAll,
+                false => Callbacks.selectNone,
+            },
+        };
+        const flags = if (callback != null) imgui.ImGuiInputTextFlags_CallbackAlways else 0;
+        _ = imgui.igInputText("##input", &editing.text_buffer, editing.text_buffer.len, flags, callback, null);
+        if (imgui.igIsItemActivated()) {
+            editing.input_activated = true;
+        }
+        if (editing.input_activated and !imgui.igIsItemActive()) {
+            const text = std.mem.sliceTo(&editing.text_buffer, 0);
+            const input = model.Input.parse(text);
+            self.editor.setValues(input) catch |err| {
+                sdk.misc.error_context.append("Failed to set table values.", .{});
+                sdk.misc.error_context.logError(err);
+            };
+            self.state = .idle;
         }
     }
 
@@ -482,14 +562,11 @@ pub const TaiTable = struct {
         items: Items,
     ) void {
         switch (self.state) {
-            .idle => if (imgui.igIsMouseClicked_Bool(imgui.ImGuiMouseButton_Left, false)) {
-                const player_id: model.PlayerId = switch (imgui.igTableGetHoveredColumn()) {
-                    1, 2 => .player_1,
-                    4, 5 => .player_2,
-                    else => return,
-                };
-                const index = std.math.cast(usize, imgui.igTableGetHoveredRow() -| 1) orelse return;
-                const cell = ui.TaiEditor.Selection.Cell{ .player_id = player_id, .index = index };
+            .idle => {
+                if (!imgui.igIsMouseClicked_Bool(imgui.ImGuiMouseButton_Left, false)) {
+                    return;
+                }
+                const cell = getHoveredCell() orelse return;
                 const mods = imgui.igGetIO_Nil().*.KeyMods;
                 if (mods == 0) {
                     self.state = .selecting;
@@ -497,8 +574,8 @@ pub const TaiTable = struct {
                 } else if (mods == imgui.ImGuiMod_Shift) {
                     self.state = .selecting;
                     self.editor.selection.end = cell;
-                } else if (mods == imgui.ImGuiMod_Alt and self.editor.selection.isCellInside(player_id, index)) {
-                    self.state = .{ .moving = .{ .handle_index = index } };
+                } else if (mods == imgui.ImGuiMod_Alt and self.editor.selection.isCellInside(cell.player_id, cell.index)) {
+                    self.state = .{ .moving = .{ .handle_index = cell.index } };
                 }
             },
             .selecting => {
@@ -528,12 +605,33 @@ pub const TaiTable = struct {
     }
 
     fn handleKeyboardSelect(self: *Self, items: Items) void {
+        if (self.state != .idle) {
+            return;
+        }
+
+        var next_cell = self.editor.selection.end;
+        if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Enter, true)) {
+            const mods = imgui.igGetIO_Nil().*.KeyMods;
+            if (mods == 0) {
+                if (next_cell.index < items.len) {
+                    next_cell.index += 1;
+                }
+                self.editor.selection = .{ .start = next_cell, .end = next_cell };
+                return;
+            } else if (mods == imgui.ImGuiMod_Shift) {
+                if (next_cell.index > 0) {
+                    next_cell.index -= 1;
+                }
+                self.editor.selection = .{ .start = next_cell, .end = next_cell };
+                return;
+            }
+        }
+
         const up_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_UpArrow, true);
         const down_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_DownArrow, true);
         const left_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_LeftArrow, true);
         const right_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_RightArrow, true);
         var detected_press = false;
-        var next_cell = self.editor.selection.end;
         if (up_pressed and !down_pressed) {
             detected_press = true;
             if (next_cell.index > 0) {
@@ -564,6 +662,176 @@ pub const TaiTable = struct {
         }
     }
 
+    fn handleMouseEdit(self: *Self, items: Items) void {
+        if (self.state != .idle) {
+            return;
+        }
+        if (!imgui.igIsMouseDoubleClicked_Nil(imgui.ImGuiMouseButton_Left)) {
+            return;
+        }
+        if (imgui.igGetIO_Nil().*.KeyMods != 0) {
+            return;
+        }
+        const cell = &self.editor.selection.end;
+        if (!std.meta.eql(getHoveredCell(), cell.*)) {
+            return;
+        }
+        if (cell.index >= items.len) {
+            self.state = .{ .editing = .{ .text_buffer = State.Editing.empty_buffer, .select_all = true } };
+            return;
+        }
+        const item = &items[cell.index];
+        const input = switch (cell.player_id) {
+            .player_1 => item.player_1,
+            .player_2 => item.player_2,
+        };
+        var buffer: [State.Editing.buffer_size]u8 = undefined;
+        _ = std.fmt.bufPrintZ(&buffer, "{f}", .{input}) catch |err| {
+            sdk.misc.error_context.append("Failed to convert input to text.", .{});
+            sdk.misc.error_context.logError(err);
+            return;
+        };
+        self.state = .{ .editing = .{ .text_buffer = buffer, .select_all = true } };
+    }
+
+    fn handleCancelShortcut(self: *Self) void {
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Escape, false)) {
+            return;
+        }
+        self.state = .idle;
+    }
+
+    fn handleClearValuesShortcut(self: *Self, items: Items) void {
+        if (self.state != .idle) {
+            return;
+        }
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Backspace, true)) {
+            return;
+        }
+        const Direction = enum { up, down };
+        const direction: Direction = switch (imgui.igGetIO_Nil().*.KeyMods) {
+            0 => .down,
+            imgui.ImGuiMod_Shift => .up,
+            else => return,
+        };
+        self.editor.setValues(.{}) catch |err| {
+            sdk.misc.error_context.append("Failed to set table values.", .{});
+            sdk.misc.error_context.logError(err);
+            return;
+        };
+        var next_cell = self.editor.selection.end;
+        if (direction == .up and next_cell.index > 0) {
+            next_cell.index -= 1;
+        }
+        if (direction == .down and next_cell.index < items.len) {
+            next_cell.index += 1;
+        }
+        self.editor.selection = .{ .start = next_cell, .end = next_cell };
+    }
+
+    fn handleEditShortcut(self: *Self, items: Items) void {
+        if (self.state != .idle) {
+            return;
+        }
+        switch (imgui.igGetIO_Nil().*.KeyMods) {
+            imgui.ImGuiMod_Ctrl => {
+                if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_E, false)) {
+                    return;
+                }
+                const cell = &self.editor.selection.end;
+                if (cell.index >= items.len) {
+                    self.state = .{ .editing = .{ .text_buffer = State.Editing.empty_buffer, .select_all = true } };
+                    return;
+                }
+                const item = &items[cell.index];
+                const input = switch (cell.player_id) {
+                    .player_1 => item.player_1,
+                    .player_2 => item.player_2,
+                };
+                var buffer: [State.Editing.buffer_size]u8 = undefined;
+                _ = std.fmt.bufPrintZ(&buffer, "{f}", .{input}) catch |err| {
+                    sdk.misc.error_context.append("Failed to convert input to text.", .{});
+                    sdk.misc.error_context.logError(err);
+                    return;
+                };
+                self.state = .{ .editing = .{ .text_buffer = buffer, .select_all = true } };
+            },
+            0 => {
+                const queue = &imgui.igGetIO_Nil().*.InputQueueCharacters;
+                if (queue.Size <= 0) {
+                    return;
+                }
+                const codepoints = queue.Data[0..@intCast(queue.Size)];
+                var buffer: [State.Editing.buffer_size]u8 = undefined;
+                var len: usize = 0;
+                for (codepoints) |codepoint| {
+                    const u21_codepoint = std.math.cast(u21, codepoint) orelse {
+                        sdk.misc.error_context.new("Failed to UTF8 encode: 0x{X}", .{codepoint});
+                        sdk.misc.error_context.logError(error.CastFailed);
+                        continue;
+                    };
+                    if (u21_codepoint < 256 and !std.ascii.isPrint(@intCast(u21_codepoint))) {
+                        continue;
+                    }
+                    const size = std.unicode.utf8Encode(u21_codepoint, buffer[len..(buffer.len - 1)]) catch |err| {
+                        sdk.misc.error_context.new("Failed to UTF8 encode: 0x{X}", .{u21_codepoint});
+                        sdk.misc.error_context.logError(err);
+                        continue;
+                    };
+                    len += size;
+                }
+                if (len == 0) {
+                    return;
+                }
+                buffer[len] = 0;
+                self.state = .{ .editing = .{ .text_buffer = buffer, .select_all = false } };
+            },
+            else => {},
+        }
+    }
+
+    fn handleConfirmEditShortcut(self: *Self, items: Items) void {
+        const editing = switch (self.state) {
+            .editing => |*editing| editing,
+            else => return,
+        };
+        const Direction = enum { up, down };
+        const direction: Direction = block: {
+            const up_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_UpArrow, false);
+            const down_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_DownArrow, false);
+            if (up_pressed and !down_pressed) {
+                break :block .up;
+            }
+            if (down_pressed and !up_pressed) {
+                break :block .down;
+            }
+            if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Enter, false)) {
+                break :block switch (imgui.igGetIO_Nil().*.KeyMods) {
+                    0 => .down,
+                    imgui.ImGuiMod_Shift => .up,
+                    else => return,
+                };
+            }
+            return;
+        };
+        const text = std.mem.sliceTo(&editing.text_buffer, 0);
+        const input = model.Input.parse(text);
+        self.editor.setValues(input) catch |err| {
+            sdk.misc.error_context.append("Failed to set table values.", .{});
+            sdk.misc.error_context.logError(err);
+            return;
+        };
+        self.state = .idle;
+        var next_cell = self.editor.selection.end;
+        if (direction == .up and next_cell.index > 0) {
+            next_cell.index -= 1;
+        }
+        if (direction == .down and next_cell.index < items.len) {
+            next_cell.index += 1;
+        }
+        self.editor.selection = .{ .start = next_cell, .end = next_cell };
+    }
+
     fn drawEnabledCheckbox(enabled: *bool, player_id: model.PlayerId) void {
         imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
         defer imgui.igPopStyleVar(1);
@@ -584,15 +852,21 @@ pub const TaiTable = struct {
         }
     }
 
-    fn handleEnabledShortcut(enabled: *bool, player_id: model.PlayerId) void {
-        const correct_mods = imgui.igGetIO_Nil().*.KeyMods == imgui.ImGuiMod_Ctrl;
-        const key_pressed = switch (player_id) {
-            .player_1 => imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_1, false),
-            .player_2 => imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_2, false),
-        };
-        if (correct_mods and key_pressed) {
-            enabled.* = !enabled.*;
+    fn handleEnabledShortcut(self: *const Self, enabled: *bool, player_id: model.PlayerId) void {
+        if (self.state != .idle) {
+            return;
         }
+        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Ctrl) {
+            return;
+        }
+        const key: c_uint = switch (player_id) {
+            .player_1 => imgui.ImGuiKey_1,
+            .player_2 => imgui.ImGuiKey_2,
+        };
+        if (!imgui.igIsKeyPressed_Bool(key, false)) {
+            return;
+        }
+        enabled.* = !enabled.*;
     }
 
     fn drawMenuButton() void {
@@ -607,12 +881,17 @@ pub const TaiTable = struct {
         }
     }
 
-    fn handleMenuShortcut() void {
-        const correct_mods = imgui.igGetIO_Nil().*.KeyMods == imgui.ImGuiMod_Ctrl;
-        const key_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_M, false);
-        if (correct_mods and key_pressed) {
-            // TODO
+    fn handleMenuShortcut(self: *const Self) void {
+        if (self.state != .idle) {
+            return;
         }
+        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Ctrl) {
+            return;
+        }
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_M, false)) {
+            return;
+        }
+        // TODO
     }
 
     fn isUndoDisabled(self: *const Self) bool {
@@ -638,17 +917,22 @@ pub const TaiTable = struct {
     }
 
     fn handleUndoShortcut(self: *Self, tai: *core.ToolAssistedInput) void {
+        if (self.state != .idle) {
+            return;
+        }
         if (self.isUndoDisabled()) {
             return;
         }
-        const correct_mods = imgui.igGetIO_Nil().*.KeyMods == imgui.ImGuiMod_Ctrl;
-        const key_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Z, true);
-        if (correct_mods and key_pressed) {
-            self.editor.undo(tai) catch |err| {
-                sdk.misc.error_context.append("Failed to undo.", .{});
-                sdk.misc.error_context.logError(err);
-            };
+        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Ctrl) {
+            return;
         }
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Z, true)) {
+            return;
+        }
+        self.editor.undo(tai) catch |err| {
+            sdk.misc.error_context.append("Failed to undo.", .{});
+            sdk.misc.error_context.logError(err);
+        };
     }
 
     fn isRedoDisabled(self: *const Self) bool {
@@ -674,17 +958,22 @@ pub const TaiTable = struct {
     }
 
     fn handleRedoShortcut(self: *Self, tai: *core.ToolAssistedInput) void {
+        if (self.state != .idle) {
+            return;
+        }
         if (self.isRedoDisabled()) {
             return;
         }
-        const correct_mods = imgui.igGetIO_Nil().*.KeyMods == imgui.ImGuiMod_Ctrl;
-        const key_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Y, true);
-        if (correct_mods and key_pressed) {
-            self.editor.redo(tai) catch |err| {
-                sdk.misc.error_context.append("Failed to redo.", .{});
-                sdk.misc.error_context.logError(err);
-            };
+        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Ctrl) {
+            return;
         }
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Y, true)) {
+            return;
+        }
+        self.editor.redo(tai) catch |err| {
+            sdk.misc.error_context.append("Failed to redo.", .{});
+            sdk.misc.error_context.logError(err);
+        };
     }
 
     fn isImportDisabled(controller: *const core.Controller) bool {
@@ -753,20 +1042,25 @@ pub const TaiTable = struct {
     }
 
     fn handleImportShortcut(self: *Self, tai: *core.ToolAssistedInput, controller: *const core.Controller) void {
+        if (self.state != .idle) {
+            return;
+        }
         if (isImportDisabled(controller)) {
             return;
         }
-        const correct_mods = imgui.igGetIO_Nil().*.KeyMods == imgui.ImGuiMod_Ctrl;
-        const key_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_I, false);
-        if (correct_mods and key_pressed) {
-            if (tai.sequence.items.len == 0) {
-                self.editor.importFromRecording(tai, controller) catch |err| {
-                    sdk.misc.error_context.append("Failed to import tool assisted inputs from recording.", .{});
-                    sdk.misc.error_context.logError(err);
-                };
-            } else {
-                self.state = .{ .confirming = .import };
-            }
+        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Ctrl) {
+            return;
+        }
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_I, false)) {
+            return;
+        }
+        if (tai.sequence.items.len == 0) {
+            self.editor.importFromRecording(tai, controller) catch |err| {
+                sdk.misc.error_context.append("Failed to import tool assisted inputs from recording.", .{});
+                sdk.misc.error_context.logError(err);
+            };
+        } else {
+            self.state = .{ .confirming = .import };
         }
     }
 
@@ -826,14 +1120,19 @@ pub const TaiTable = struct {
     }
 
     fn handleClearShortcut(self: *Self, tai: *const core.ToolAssistedInput) void {
+        if (self.state != .idle) {
+            return;
+        }
         if (isClearDisabled(tai)) {
             return;
         }
-        const correct_mods = imgui.igGetIO_Nil().*.KeyMods == imgui.ImGuiMod_Ctrl;
-        const key_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Delete, false);
-        if (correct_mods and key_pressed) {
-            self.state = .{ .confirming = .clear };
+        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Ctrl) {
+            return;
         }
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Delete, false)) {
+            return;
+        }
+        self.state = .{ .confirming = .clear };
     }
 
     fn drawMoveButton(self: *Self, index: usize) void {
@@ -919,17 +1218,17 @@ pub const TaiTable = struct {
             return;
         }
         const destination_max_index = destination_min_index + selection.getNumberOfRows() - 1;
-        if (self.editor.move(destination_min_index)) {
-            if (selection.start.index <= selection.end.index) {
-                selection.start.index = destination_min_index;
-                selection.end.index = destination_max_index;
-            } else {
-                selection.start.index = destination_max_index;
-                selection.end.index = destination_min_index;
-            }
-        } else |err| {
+        self.editor.move(destination_min_index) catch |err| {
             sdk.misc.error_context.append("Failed move inputs.", .{});
             sdk.misc.error_context.logError(err);
+            return;
+        };
+        if (selection.start.index <= selection.end.index) {
+            selection.start.index = destination_min_index;
+            selection.end.index = destination_max_index;
+        } else {
+            selection.start.index = destination_max_index;
+            selection.end.index = destination_min_index;
         }
     }
 
@@ -996,8 +1295,10 @@ pub const TaiTable = struct {
     }
 
     fn handleMoveShortcut(self: *Self, items: Items) void {
-        const correct_mods = imgui.igGetIO_Nil().*.KeyMods == imgui.ImGuiMod_Alt;
-        if (!correct_mods) {
+        if (self.state != .idle) {
+            return;
+        }
+        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Alt) {
             return;
         }
         const up_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_UpArrow, true);
@@ -1047,13 +1348,14 @@ pub const TaiTable = struct {
                     .end = .{ .index = items.len - 1, .player_id = .player_2 },
                 };
             }
-            self.editor.swapSides() catch |err| {
+            if (self.editor.swapSides()) {
+                if (selection.start.player_id == selection.end.player_id) {
+                    selection.start.player_id = selection.start.player_id.getOther();
+                    selection.end.player_id = selection.end.player_id.getOther();
+                }
+            } else |err| {
                 sdk.misc.error_context.append("Failed to swap input sides.", .{});
                 sdk.misc.error_context.logError(err);
-            };
-            if (selection.start.player_id == selection.end.player_id) {
-                selection.start.player_id = selection.start.player_id.getOther();
-                selection.end.player_id = selection.end.player_id.getOther();
             }
         }
         if (imgui.igIsItemHovered(0)) {
@@ -1088,8 +1390,10 @@ pub const TaiTable = struct {
     }
 
     fn handleSwapShortcut(self: *Self) void {
-        const correct_mods = imgui.igGetIO_Nil().*.KeyMods == imgui.ImGuiMod_Alt;
-        if (!correct_mods) {
+        if (self.state != .idle) {
+            return;
+        }
+        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Alt) {
             return;
         }
         const left_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_LeftArrow, false);
@@ -1163,14 +1467,19 @@ pub const TaiTable = struct {
     }
 
     fn handleInsertShortcut(self: *Self) void {
-        const correct_mods = imgui.igGetIO_Nil().*.KeyMods == 0;
-        const key_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Insert, false);
-        if (correct_mods and key_pressed) {
-            self.editor.insertRows() catch |err| {
-                sdk.misc.error_context.append("Failed to insert rows.", .{});
-                sdk.misc.error_context.logError(err);
-            };
+        if (self.state != .idle) {
+            return;
         }
+        if (imgui.igGetIO_Nil().*.KeyMods != 0) {
+            return;
+        }
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Insert, false)) {
+            return;
+        }
+        self.editor.insertRows() catch |err| {
+            sdk.misc.error_context.append("Failed to insert rows.", .{});
+            sdk.misc.error_context.logError(err);
+        };
     }
 
     fn drawDeleteButton(self: *Self, index: usize) void {
@@ -1217,17 +1526,32 @@ pub const TaiTable = struct {
     }
 
     fn handleDeleteShortcut(self: *Self) void {
-        const correct_mods = imgui.igGetIO_Nil().*.KeyMods == 0;
-        const key_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Delete, false);
-        if (correct_mods and key_pressed) {
-            self.editor.deleteRows() catch |err| {
-                sdk.misc.error_context.append("Failed to delete rows.", .{});
-                sdk.misc.error_context.logError(err);
-            };
-            const selection = &self.editor.selection;
-            const min_index = selection.getMinIndex();
-            selection.start.index = min_index;
-            selection.end.index = min_index;
+        if (self.state != .idle) {
+            return;
         }
+        if (imgui.igGetIO_Nil().*.KeyMods != 0) {
+            return;
+        }
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Delete, false)) {
+            return;
+        }
+        self.editor.deleteRows() catch |err| {
+            sdk.misc.error_context.append("Failed to delete rows.", .{});
+            sdk.misc.error_context.logError(err);
+        };
+        const selection = &self.editor.selection;
+        const min_index = selection.getMinIndex();
+        selection.start.index = min_index;
+        selection.end.index = min_index;
+    }
+
+    fn getHoveredCell() ?ui.TaiEditor.Selection.Cell {
+        const player_id: model.PlayerId = switch (imgui.igTableGetHoveredColumn()) {
+            1, 2 => .player_1,
+            4, 5 => .player_2,
+            else => return null,
+        };
+        const index = std.math.cast(usize, imgui.igTableGetHoveredRow() - 1) orelse return null;
+        return .{ .player_id = player_id, .index = index };
     }
 };

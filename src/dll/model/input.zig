@@ -66,7 +66,7 @@ pub const Input = packed struct {
                 else => {},
             }
         }
-        return self;
+        return self.clean();
     }
 
     pub fn format(self: Self, writer: *std.Io.Writer) std.Io.Writer.Error!void {
