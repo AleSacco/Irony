@@ -236,10 +236,6 @@ pub const TaiEditor = struct {
         if (self.uncommitted.items.len == 0) {
             return;
         }
-        self.undo_stack.ensureUnusedCapacity(self.allocator, self.uncommitted.items.len) catch |err| {
-            sdk.misc.error_context.new("Failed to allocate memory to store uncommitted changes on the undo stack.", .{});
-            return err;
-        };
         var number_of_changes_applied: usize = 0;
         errdefer {
             var index = number_of_changes_applied;
@@ -248,14 +244,25 @@ pub const TaiEditor = struct {
                 change.undo(tai, &self.selection) catch unreachable;
             }
         }
+        var number_of_changes_appended: usize = 0;
+        errdefer self.undo_stack.items.len -= number_of_changes_appended;
         for (self.uncommitted.items, 0..) |*change, change_index| {
-            change.apply(tai, &self.selection) catch |err| {
+            const changed_something = change.apply(tai, &self.selection) catch |err| {
                 sdk.misc.error_context.append("Failed to apply uncommitted change at index: {}", .{change_index});
                 return err;
             };
             number_of_changes_applied += 1;
+            if (changed_something) {
+                self.undo_stack.append(self.allocator, change.*) catch |err| {
+                    sdk.misc.error_context.append("Failed to append change {} to undo stack.", .{change_index});
+                    return err;
+                };
+                number_of_changes_appended += 1;
+            }
         }
-        self.undo_stack.appendSliceAssumeCapacity(self.uncommitted.items);
+        if (number_of_changes_appended == 1 and self.undo_stack.getLast() == .checkpoint) {
+            self.undo_stack.items.len -= 1;
+        }
         self.redo_stack.clearAndFree(self.allocator);
         self.discardUncommitted();
     }
@@ -297,7 +304,7 @@ pub const TaiEditor = struct {
         var number_of_changes_undone: usize = 0;
         errdefer for (0..number_of_changes_undone) |_| {
             var change = self.redo_stack.pop() orelse unreachable;
-            change.apply(tai, &self.selection) catch unreachable;
+            _ = change.apply(tai, &self.selection) catch unreachable;
             self.undo_stack.appendAssumeCapacity(change);
         };
         for (0..number_of_changes_to_undo) |change_number| {
@@ -351,7 +358,7 @@ pub const TaiEditor = struct {
         for (0..number_of_changes_to_redo) |change_number| {
             var change = self.redo_stack.pop() orelse unreachable;
             errdefer self.redo_stack.appendAssumeCapacity(change);
-            change.apply(tai, &self.selection) catch |err| {
+            _ = change.apply(tai, &self.selection) catch |err| {
                 sdk.misc.error_context.append("Failed to redo change: {}", .{change_number});
                 return err;
             };
@@ -393,8 +400,8 @@ const Change = union(enum) {
     swap_sides: SwapSides,
     set_value: SetValue,
 
-    pub fn apply(self: *Change, tai: *core.ToolAssistedInput, selection: *TaiEditor.Selection) !void {
-        (switch (self.*) {
+    pub fn apply(self: *Change, tai: *core.ToolAssistedInput, selection: *TaiEditor.Selection) !bool {
+        return (switch (self.*) {
             .checkpoint => |*checkpoint| checkpoint.apply(selection),
             .insert_row => |*insert_row| insert_row.apply(tai),
             .delete_row => |*delete_row| delete_row.apply(tai),
@@ -425,12 +432,13 @@ const Change = union(enum) {
         selection_before: TaiEditor.Selection,
         selection_after: ?TaiEditor.Selection,
 
-        pub fn apply(self: *Checkpoint, selection: *TaiEditor.Selection) void {
+        pub fn apply(self: *Checkpoint, selection: *TaiEditor.Selection) bool {
             if (self.selection_after) |selection_after| {
                 selection.* = selection_after;
             } else {
                 self.selection_after = selection.*;
             }
+            return true;
         }
 
         pub fn undo(self: *const Checkpoint, selection: *TaiEditor.Selection) void {
@@ -441,7 +449,7 @@ const Change = union(enum) {
         index: usize,
         new_values: core.ToolAssistedInput.SequenceItem,
 
-        pub fn apply(self: *const InsertRow, tai: *core.ToolAssistedInput) !void {
+        pub fn apply(self: *const InsertRow, tai: *core.ToolAssistedInput) !bool {
             if (self.index > tai.sequence.items.len) {
                 sdk.misc.error_context.new("Index out of bounds: {}", .{self.index});
                 return error.IndexOutOfBounds;
@@ -453,6 +461,7 @@ const Change = union(enum) {
                 );
                 return err;
             };
+            return true;
         }
 
         pub fn undo(self: *const InsertRow, tai: *core.ToolAssistedInput) !void {
@@ -460,7 +469,7 @@ const Change = union(enum) {
                 .index = self.index,
                 .old_values = self.new_values,
             };
-            inverse.apply(tai) catch |err| {
+            _ = inverse.apply(tai) catch |err| {
                 sdk.misc.error_context.append("Failed to apply the inverse (delete row) change.", .{});
                 return err;
             };
@@ -470,13 +479,14 @@ const Change = union(enum) {
         index: usize,
         old_values: core.ToolAssistedInput.SequenceItem,
 
-        pub fn apply(self: *DeleteRow, tai: *core.ToolAssistedInput) !void {
+        pub fn apply(self: *DeleteRow, tai: *core.ToolAssistedInput) !bool {
             if (self.index >= tai.sequence.items.len) {
                 sdk.misc.error_context.new("Index out of bounds: {}", .{self.index});
                 return error.IndexOutOfBounds;
             }
             self.old_values = tai.sequence.items[self.index];
             _ = tai.sequence.orderedRemove(self.index);
+            return true;
         }
 
         pub fn undo(self: *const DeleteRow, tai: *core.ToolAssistedInput) !void {
@@ -484,7 +494,7 @@ const Change = union(enum) {
                 .index = self.index,
                 .new_values = self.old_values,
             };
-            inverse.apply(tai) catch |err| {
+            _ = inverse.apply(tai) catch |err| {
                 sdk.misc.error_context.append("Failed to apply the inverse (insert row) change.", .{});
                 return err;
             };
@@ -499,10 +509,10 @@ const Change = union(enum) {
         pub const Columns = enum { player_1, player_2, both };
         const SequenceItem = core.ToolAssistedInput.SequenceItem;
 
-        pub fn apply(self: *const Move, tai: *core.ToolAssistedInput) !void {
+        pub fn apply(self: *const Move, tai: *core.ToolAssistedInput) !bool {
             const items = tai.sequence.items;
             if (self.number_of_rows == 0 or self.source_index == self.destination_index) {
-                return;
+                return false;
             }
             const source_end = std.math.add(usize, self.source_index, self.number_of_rows) catch |err| {
                 sdk.misc.error_context.new("Failed to calculate source end index.", .{});
@@ -525,6 +535,7 @@ const Change = union(enum) {
                 .player_2 => &swapPlayer2,
                 .both => &swapBoth,
             };
+            var change_detected = false;
             if (self.destination_index < self.source_index) {
                 const a_len = self.source_index - self.destination_index;
                 const b_len = self.number_of_rows;
@@ -535,14 +546,14 @@ const Change = union(enum) {
                 while (a != 0 and b != 0) {
                     if (a <= b) {
                         for (0..a) |i| {
-                            swap(&items[first + i], &items[middle + i]);
+                            swap(&change_detected, &items[first + i], &items[middle + i]);
                         }
                         first += a;
                         middle += a;
                         b -= a;
                     } else {
                         for (0..b) |i| {
-                            swap(&items[first + a - b + i], &items[middle + i]);
+                            swap(&change_detected, &items[first + a - b + i], &items[middle + i]);
                         }
                         middle -= b;
                         a -= b;
@@ -558,20 +569,21 @@ const Change = union(enum) {
                 while (a != 0 and b != 0) {
                     if (a <= b) {
                         for (0..a) |i| {
-                            swap(&items[first + i], &items[middle + i]);
+                            swap(&change_detected, &items[first + i], &items[middle + i]);
                         }
                         first += a;
                         middle += a;
                         b -= a;
                     } else {
                         for (0..b) |i| {
-                            swap(&items[first + a - b + i], &items[middle + i]);
+                            swap(&change_detected, &items[first + a - b + i], &items[middle + i]);
                         }
                         middle -= b;
                         a -= b;
                     }
                 }
             }
+            return change_detected;
         }
 
         pub fn undo(self: *const Move, tai: *core.ToolAssistedInput) !void {
@@ -581,31 +593,45 @@ const Change = union(enum) {
                 .destination_index = self.source_index,
                 .number_of_rows = self.number_of_rows,
             };
-            inverse.apply(tai) catch |err| {
+            _ = inverse.apply(tai) catch |err| {
                 sdk.misc.error_context.append("Failed to apply the inverse (move) change.", .{});
                 return err;
             };
         }
 
-        fn swapPlayer1(item_1: *SequenceItem, item_2: *SequenceItem) void {
+        fn swapPlayer1(change_detected: *bool, item_1: *SequenceItem, item_2: *SequenceItem) void {
+            if (item_1.player_1.equalsIgnoringLeftRight(item_2.player_1)) {
+                return;
+            }
             std.mem.swap(model.Input, &item_1.player_1, &item_2.player_1);
+            change_detected.* = true;
         }
 
-        fn swapPlayer2(item_1: *SequenceItem, item_2: *SequenceItem) void {
+        fn swapPlayer2(change_detected: *bool, item_1: *SequenceItem, item_2: *SequenceItem) void {
+            if (item_1.player_2.equalsIgnoringLeftRight(item_2.player_2)) {
+                return;
+            }
             std.mem.swap(model.Input, &item_1.player_2, &item_2.player_2);
+            change_detected.* = true;
         }
 
-        fn swapBoth(item_1: *SequenceItem, item_2: *SequenceItem) void {
+        fn swapBoth(change_detected: *bool, item_1: *SequenceItem, item_2: *SequenceItem) void {
+            const p1_equals = item_1.player_1.equalsIgnoringLeftRight(item_2.player_1);
+            const p2_equals = item_1.player_2.equalsIgnoringLeftRight(item_2.player_2);
+            if (p1_equals and p2_equals) {
+                return;
+            }
             std.mem.swap(core.ToolAssistedInput.SequenceItem, item_1, item_2);
+            change_detected.* = true;
         }
     };
     pub const SwapSides = struct {
         index: usize,
         number_of_rows: usize,
 
-        pub fn apply(self: *const SwapSides, tai: *core.ToolAssistedInput) !void {
+        pub fn apply(self: *const SwapSides, tai: *core.ToolAssistedInput) !bool {
             if (self.number_of_rows == 0) {
-                return;
+                return false;
             }
             const start = self.index;
             const end = std.math.add(usize, start, self.number_of_rows) catch |err| {
@@ -616,13 +642,19 @@ const Change = union(enum) {
                 sdk.misc.error_context.new("Index range out of bounds.", .{});
                 return error.IndexOutOfBounds;
             }
+            var change_detected = false;
             for (tai.sequence.items[start..end]) |*item| {
+                if (item.player_1.equalsIgnoringLeftRight(item.player_2)) {
+                    continue;
+                }
                 std.mem.swap(model.Input, &item.player_1, &item.player_2);
+                change_detected = true;
             }
+            return change_detected;
         }
 
         pub fn undo(self: *const SwapSides, tai: *core.ToolAssistedInput) !void {
-            return self.apply(tai);
+            _ = try self.apply(tai);
         }
     };
     pub const SetValue = struct {
@@ -631,7 +663,7 @@ const Change = union(enum) {
         old_value: model.Input,
         new_value: model.Input,
 
-        pub fn apply(self: *SetValue, tai: *core.ToolAssistedInput) !void {
+        pub fn apply(self: *SetValue, tai: *core.ToolAssistedInput) !bool {
             if (self.index >= tai.sequence.items.len) {
                 sdk.misc.error_context.new("Index out of bounds: {}", .{self.index});
                 return error.IndexOutOfBounds;
@@ -641,8 +673,13 @@ const Change = union(enum) {
                 .player_1 => &item.player_1,
                 .player_2 => &item.player_2,
             };
-            self.old_value = value.*;
-            value.* = self.new_value;
+            if (!value.equalsIgnoringLeftRight(self.new_value)) {
+                self.old_value = value.*;
+                value.* = self.new_value;
+                return true;
+            } else {
+                return false;
+            }
         }
 
         pub fn undo(self: *const SetValue, tai: *core.ToolAssistedInput) !void {
@@ -652,7 +689,7 @@ const Change = union(enum) {
                 .old_value = self.new_value,
                 .new_value = self.old_value,
             };
-            inverse.apply(tai) catch |err| {
+            _ = inverse.apply(tai) catch |err| {
                 sdk.misc.error_context.append("Failed to apply the inverse (set value) change.", .{});
                 return err;
             };
@@ -668,6 +705,44 @@ test "commit should do nothing when no uncommitted changes are pending" {
     var tai = core.ToolAssistedInput.init(testing.allocator);
     defer tai.deinit();
 
+    try editor.commit(&tai);
+    try testing.expectEqual(false, editor.canUndo());
+}
+
+test "commit should not store changes when changes don't change the input sequence" {
+    var editor = TaiEditor.init(testing.allocator);
+    defer editor.deinit();
+    var tai = core.ToolAssistedInput.init(testing.allocator);
+    defer tai.deinit();
+    try tai.sequence.appendSlice(testing.allocator, &.{
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_2 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_2 = true }, .player_2 = .{ .button_2 = true } },
+    });
+
+    editor.selection = .{
+        .start = .{ .index = 0, .player_id = .player_1 },
+        .end = .{ .index = 1, .player_id = .player_2 },
+    };
+    try editor.setValues(.{ .button_1 = true });
+    try editor.commit(&tai);
+    try testing.expectEqual(false, editor.canUndo());
+
+    editor.selection = .{
+        .start = .{ .index = 2, .player_id = .player_2 },
+        .end = .{ .index = 3, .player_id = .player_2 },
+    };
+    try editor.move(3);
+    try editor.commit(&tai);
+    try testing.expectEqual(false, editor.canUndo());
+
+    editor.selection = .{
+        .start = .{ .index = 3, .player_id = .player_1 },
+        .end = .{ .index = 4, .player_id = .player_1 },
+    };
+    try editor.swapSides();
     try editor.commit(&tai);
     try testing.expectEqual(false, editor.canUndo());
 }
