@@ -758,40 +758,73 @@ pub const TaiTable = struct {
     }
 
     fn handleEditShortcut(self: *Self, items: Items) void {
-        if (self.state != .idle) {
-            return;
-        }
-        switch (imgui.igGetIO_Nil().*.KeyMods) {
-            imgui.ImGuiMod_Ctrl => {
-                if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_E, false)) {
-                    return;
-                }
-                const cell = &self.editor.selection.end;
-                if (cell.index >= items.len) {
-                    self.state = .{ .editing = .{ .text_buffer = State.Editing.empty_buffer, .select_all = true } };
-                    return;
-                }
-                const item = &items[cell.index];
-                const input = switch (cell.player_id) {
-                    .player_1 => item.player_1,
-                    .player_2 => item.player_2,
-                };
-                var buffer: [State.Editing.buffer_size]u8 = undefined;
-                _ = std.fmt.bufPrintZ(&buffer, "{f}", .{input}) catch |err| {
-                    sdk.misc.error_context.append("Failed to convert input to text.", .{});
-                    sdk.misc.error_context.logError(err);
-                    return;
-                };
-                self.state = .{ .editing = .{ .text_buffer = buffer, .select_all = true } };
+        switch (self.state) {
+            .idle => switch (imgui.igGetIO_Nil().*.KeyMods) {
+                imgui.ImGuiMod_Ctrl => {
+                    if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_E, false)) {
+                        return;
+                    }
+                    const cell = &self.editor.selection.end;
+                    if (cell.index >= items.len) {
+                        self.state = .{ .editing = .{ .text_buffer = State.Editing.empty_buffer, .select_all = true } };
+                        return;
+                    }
+                    const item = &items[cell.index];
+                    const input = switch (cell.player_id) {
+                        .player_1 => item.player_1,
+                        .player_2 => item.player_2,
+                    };
+                    var buffer: [State.Editing.buffer_size]u8 = undefined;
+                    _ = std.fmt.bufPrintZ(&buffer, "{f}", .{input}) catch |err| {
+                        sdk.misc.error_context.append("Failed to convert input to text.", .{});
+                        sdk.misc.error_context.logError(err);
+                        return;
+                    };
+                    self.state = .{ .editing = .{ .text_buffer = buffer, .select_all = true } };
+                },
+                0 => {
+                    const queue = &imgui.igGetIO_Nil().*.InputQueueCharacters;
+                    if (queue.Size <= 0) {
+                        return;
+                    }
+                    const codepoints = queue.Data[0..@intCast(queue.Size)];
+                    var buffer: [State.Editing.buffer_size]u8 = undefined;
+                    var len: usize = 0;
+                    for (codepoints) |codepoint| {
+                        const u21_codepoint = std.math.cast(u21, codepoint) orelse {
+                            sdk.misc.error_context.new("Failed to UTF8 encode: 0x{X}", .{codepoint});
+                            sdk.misc.error_context.logError(error.CastFailed);
+                            continue;
+                        };
+                        if (u21_codepoint < 256 and !std.ascii.isPrint(@intCast(u21_codepoint))) {
+                            continue;
+                        }
+                        const size = std.unicode.utf8Encode(u21_codepoint, buffer[len..(buffer.len - 1)]) catch |err| {
+                            sdk.misc.error_context.new("Failed to UTF8 encode: 0x{X}", .{u21_codepoint});
+                            sdk.misc.error_context.logError(err);
+                            continue;
+                        };
+                        len += size;
+                    }
+                    if (len == 0) {
+                        return;
+                    }
+                    buffer[len] = 0;
+                    self.state = .{ .editing = .{ .text_buffer = buffer, .select_all = false } };
+                },
+                else => {},
             },
-            0 => {
+            .editing => |*editing| {
+                if (editing.input_activated) {
+                    return;
+                }
                 const queue = &imgui.igGetIO_Nil().*.InputQueueCharacters;
                 if (queue.Size <= 0) {
                     return;
                 }
+                const buffer = &editing.text_buffer;
+                var len = std.mem.sliceTo(buffer, 0).len;
                 const codepoints = queue.Data[0..@intCast(queue.Size)];
-                var buffer: [State.Editing.buffer_size]u8 = undefined;
-                var len: usize = 0;
                 for (codepoints) |codepoint| {
                     const u21_codepoint = std.math.cast(u21, codepoint) orelse {
                         sdk.misc.error_context.new("Failed to UTF8 encode: 0x{X}", .{codepoint});
@@ -808,11 +841,7 @@ pub const TaiTable = struct {
                     };
                     len += size;
                 }
-                if (len == 0) {
-                    return;
-                }
                 buffer[len] = 0;
-                self.state = .{ .editing = .{ .text_buffer = buffer, .select_all = false } };
             },
             else => {},
         }
