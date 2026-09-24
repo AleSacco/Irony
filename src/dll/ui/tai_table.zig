@@ -95,6 +95,7 @@ pub const TaiTable = struct {
 
         if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows)) {
             self.handleKeyboardSelect(tai.sequence.items);
+            self.handleSelectAllShortcut(tai.sequence.items);
             self.handleClearValuesShortcut(tai.sequence.items);
             self.handleEditShortcut(tai.sequence.items);
             self.handleConfirmEditShortcut(tai.sequence.items);
@@ -719,6 +720,22 @@ pub const TaiTable = struct {
             return;
         };
         self.state = .{ .editing = .{ .text_buffer = buffer, .select_all = true } };
+    }
+
+    fn handleSelectAllShortcut(self: *Self, items: Items) void {
+        if (self.state != .idle) {
+            return;
+        }
+        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Ctrl) {
+            return;
+        }
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_A, false)) {
+            return;
+        }
+        self.editor.selection = .{
+            .start = .{ .index = 0, .player_id = .player_1 },
+            .end = .{ .index = items.len, .player_id = .player_2 },
+        };
     }
 
     fn handleClearValuesShortcut(self: *Self, items: Items) void {
