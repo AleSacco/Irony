@@ -91,7 +91,26 @@ pub const TaiTable = struct {
         }
         defer imgui.igEndTable();
 
-        const items: Items = tai.sequence.items;
+        const frame_start_selection = self.editor.selection;
+
+        if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows)) {
+            self.handleKeyboardSelect(tai.sequence.items);
+            self.handleCancelShortcut();
+            self.handleClearValuesShortcut(tai.sequence.items);
+            self.handleEditShortcut(tai.sequence.items);
+            self.handleConfirmEditShortcut(tai.sequence.items);
+            self.handleEnabledShortcut(enable_player_1, .player_1);
+            self.handleEnabledShortcut(enable_player_2, .player_2);
+            self.handleMenuShortcut();
+            self.handleUndoShortcut(tai);
+            self.handleRedoShortcut(tai);
+            self.handleImportShortcut(tai, controller);
+            self.handleClearShortcut(tai);
+            self.handleMoveShortcut(tai.sequence.items);
+            self.handleSwapShortcut(tai.sequence.items);
+            self.handleInsertShortcut();
+            self.handleDeleteShortcut(tai.sequence.items);
+        }
 
         imgui.igTableSetupScrollFreeze(0, 1);
         imgui.igTableSetupColumn("move", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
@@ -133,7 +152,7 @@ pub const TaiTable = struct {
 
             imgui.igPushID_Str("swap");
             defer imgui.igPopID();
-            self.drawSwapButton(null, items);
+            self.drawSwapButton(null, tai.sequence.items);
             imgui.igSameLine(0, 0);
             imgui.igTableHeader("");
         }
@@ -173,38 +192,55 @@ pub const TaiTable = struct {
                 imgui.igTableNextRow(0, 0);
 
                 const index = std.math.cast(usize, c_index) orelse break;
-                const moved_index = self.findSimulatedMoveIndex(index, .destination_to_source, &clipper, items);
-                const frame_maybe = if (index < items.len) controller.getFrameAt(index) else null;
+                const moved_index = self.findSimulatedMoveIndex(
+                    index,
+                    .destination_to_source,
+                    &clipper,
+                    tai.sequence.items,
+                );
+                const frame_maybe = if (index < tai.sequence.items.len) controller.getFrameAt(index) else null;
 
-                if (imgui.igTableNextColumn() and moved_index < items.len) {
-                    self.drawMoveButton(moved_index);
+                if (imgui.igTableNextColumn() and moved_index < tai.sequence.items.len) {
+                    self.drawMoveButton(moved_index, tai.sequence.items);
                 }
                 if (imgui.igTableNextColumn()) {
                     const p1_index = if (self.editor.selection.isPlayerIdInside(.player_1)) moved_index else index;
-                    self.drawInputCellContent(.player_1, p1_index, items, frame_maybe);
+                    self.drawInputCellContent(
+                        .player_1,
+                        p1_index,
+                        &frame_start_selection,
+                        tai.sequence.items,
+                        frame_maybe,
+                    );
                 }
-                if (imgui.igTableNextColumn() and index < items.len) {
+                if (imgui.igTableNextColumn() and index < tai.sequence.items.len) {
                     if (frame_maybe) |frame| {
                         drawAnimationFrameCellContent(.player_1, index, frame);
                     }
                 }
-                if (imgui.igTableNextColumn() and index < items.len) {
-                    self.drawSwapButton(index, items);
+                if (imgui.igTableNextColumn() and index < tai.sequence.items.len) {
+                    self.drawSwapButton(index, tai.sequence.items);
                 }
-                if (imgui.igTableNextColumn() and index < items.len) {
+                if (imgui.igTableNextColumn() and index < tai.sequence.items.len) {
                     if (frame_maybe) |frame| {
                         drawAnimationFrameCellContent(.player_2, index, frame);
                     }
                 }
                 if (imgui.igTableNextColumn()) {
                     const p2_index = if (self.editor.selection.isPlayerIdInside(.player_2)) moved_index else index;
-                    self.drawInputCellContent(.player_2, p2_index, items, frame_maybe);
+                    self.drawInputCellContent(
+                        .player_2,
+                        p2_index,
+                        &frame_start_selection,
+                        tai.sequence.items,
+                        frame_maybe,
+                    );
                 }
                 if (imgui.igTableNextColumn()) {
                     self.drawInsertButton(index);
-                    if (index < items.len) {
+                    if (index < tai.sequence.items.len) {
                         imgui.igSameLine(0, imgui.igGetStyle().*.ItemInnerSpacing.x);
-                        self.drawDeleteButton(index);
+                        self.drawDeleteButton(index, tai.sequence.items);
                     }
                 }
             }
@@ -216,27 +252,9 @@ pub const TaiTable = struct {
             .player_divide_screen_x = player_divide_screen_x,
         };
 
-        self.handleMouseEdit(items);
-        self.handleMouseSelect(&clipper, &dimensions, items);
-        self.handleMouseMove(&clipper, items);
-        if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows)) {
-            self.handleKeyboardSelect(items);
-            self.handleCancelShortcut();
-            self.handleClearValuesShortcut(items);
-            self.handleEditShortcut(items);
-            self.handleConfirmEditShortcut(items);
-            self.handleEnabledShortcut(enable_player_1, .player_1);
-            self.handleEnabledShortcut(enable_player_2, .player_2);
-            self.handleMenuShortcut();
-            self.handleUndoShortcut(tai);
-            self.handleRedoShortcut(tai);
-            self.handleImportShortcut(tai, controller);
-            self.handleClearShortcut(tai);
-            self.handleMoveShortcut(items);
-            self.handleSwapShortcut();
-            self.handleInsertShortcut();
-            self.handleDeleteShortcut();
-        }
+        self.handleMouseEdit(tai.sequence.items);
+        self.handleMouseSelect(&clipper, &dimensions, tai.sequence.items);
+        self.handleMouseMove(&clipper, tai.sequence.items);
 
         self.editor.commit(tai) catch |err| {
             sdk.misc.error_context.append("Failed to commit tool assisted input change.", .{});
@@ -244,7 +262,7 @@ pub const TaiTable = struct {
             self.editor.discardUncommitted();
         };
 
-        self.syncWithController(controller, items);
+        self.syncWithController(controller, tai.sequence.items);
         self.keepSelectionVisible(&clipper, &dimensions);
         self.handleEdgeScrolling(&dimensions);
     }
@@ -365,14 +383,15 @@ pub const TaiTable = struct {
         self: *Self,
         player_id: model.PlayerId,
         index: usize,
+        frame_start_selection: *const ui.TaiEditor.Selection,
         items: Items,
         frame_maybe: ?*const model.Frame,
     ) void {
         const CellType = enum { normal, selected, active };
         const cell_type: CellType = block: {
-            if (self.editor.selection.end.player_id == player_id and self.editor.selection.end.index == index) {
+            if (frame_start_selection.end.player_id == player_id and frame_start_selection.end.index == index) {
                 break :block .active;
-            } else if (self.editor.selection.isCellInside(player_id, index)) {
+            } else if (frame_start_selection.isCellInside(player_id, index)) {
                 break :block .selected;
             } else {
                 break :block .normal;
@@ -394,7 +413,7 @@ pub const TaiTable = struct {
             .editing => |*editing| switch (cell_type) {
                 .normal => drawInputCellText(player_id, index, items, frame_maybe),
                 .selected => imgui.igText("%s", &editing.text_buffer),
-                .active => self.drawInputCellEditWidget(editing),
+                .active => self.drawInputCellEditWidget(editing, items),
             },
             else => drawInputCellText(player_id, index, items, frame_maybe),
         }
@@ -442,7 +461,7 @@ pub const TaiTable = struct {
         }
     }
 
-    fn drawInputCellEditWidget(self: *Self, editing: *State.Editing) void {
+    fn drawInputCellEditWidget(self: *Self, editing: *State.Editing, items: Items) void {
         imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
         defer imgui.igPopStyleVar(1);
         const Callbacks = struct {
@@ -477,6 +496,15 @@ pub const TaiTable = struct {
             editing.input_activated = true;
         }
         if (editing.input_activated and !imgui.igIsItemActive()) {
+            const selection = &self.editor.selection;
+            if (selection.start.index == items.len and selection.end.index == items.len) {
+                self.editor.insertRows() catch |err| {
+                    sdk.misc.error_context.append("Failed to insert a row.", .{});
+                    sdk.misc.error_context.logError(err);
+                };
+            } else {
+                selection.* = selection.clampIndices(items.len);
+            }
             const text = std.mem.sliceTo(&editing.text_buffer, 0);
             const input = model.Input.parse(text);
             self.editor.setValues(input) catch |err| {
@@ -814,6 +842,16 @@ pub const TaiTable = struct {
             }
             return;
         };
+        const selection = &self.editor.selection;
+        if (selection.start.index == items.len and selection.end.index == items.len) {
+            self.editor.insertRows() catch |err| {
+                sdk.misc.error_context.append("Failed to insert row.", .{});
+                sdk.misc.error_context.logError(err);
+                return;
+            };
+        } else {
+            selection.* = selection.clampIndices(items.len);
+        }
         const text = std.mem.sliceTo(&editing.text_buffer, 0);
         const input = model.Input.parse(text);
         self.editor.setValues(input) catch |err| {
@@ -826,10 +864,10 @@ pub const TaiTable = struct {
         if (direction == .up and next_cell.index > 0) {
             next_cell.index -= 1;
         }
-        if (direction == .down and next_cell.index < items.len) {
+        if (direction == .down and next_cell.index <= items.len) {
             next_cell.index += 1;
         }
-        self.editor.selection = .{ .start = next_cell, .end = next_cell };
+        selection.* = .{ .start = next_cell, .end = next_cell };
     }
 
     fn drawEnabledCheckbox(enabled: *bool, player_id: model.PlayerId) void {
@@ -1135,7 +1173,7 @@ pub const TaiTable = struct {
         self.state = .{ .confirming = .clear };
     }
 
-    fn drawMoveButton(self: *Self, index: usize) void {
+    fn drawMoveButton(self: *Self, index: usize, items: Items) void {
         imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
         defer imgui.igPopStyleVar(1);
 
@@ -1158,6 +1196,7 @@ pub const TaiTable = struct {
                     .end = .{ .index = index, .player_id = .player_2 },
                 };
             }
+            selection.* = selection.clampIndices(items.len);
             self.state = .{ .moving = .{ .handle_index = index } };
         }
         if (imgui.igIsItemHovered(0)) {
@@ -1170,11 +1209,11 @@ pub const TaiTable = struct {
             };
             const things: Things = switch (selection.isIndexInside(index)) {
                 true => switch (selection.start.player_id == selection.end.player_id) {
-                    true => switch (selection.getNumberOfRows()) {
+                    true => switch (selection.clampIndices(items.len).getNumberOfRows()) {
                         1 => .selected_value,
                         else => |n| .{ .selected_values = n },
                     },
-                    false => switch (selection.getNumberOfRows()) {
+                    false => switch (selection.clampIndices(items.len).getNumberOfRows()) {
                         1 => .selected_row,
                         else => |n| .{ .selected_rows = n },
                     },
@@ -1307,6 +1346,7 @@ pub const TaiTable = struct {
         const min_index = selection.getMinIndex();
         const max_index = selection.getMaxIndex();
         if (up_pressed and !down_pressed and min_index > 0) {
+            selection.* = selection.clampIndices(items.len);
             if (self.editor.move(min_index - 1)) {
                 selection.start.index -= 1;
                 selection.end.index -= 1;
@@ -1316,6 +1356,7 @@ pub const TaiTable = struct {
             }
         }
         if (down_pressed and !up_pressed and max_index + 1 < items.len) {
+            selection.* = selection.clampIndices(items.len);
             if (self.editor.move(min_index + 1)) {
                 selection.start.index += 1;
                 selection.end.index += 1;
@@ -1348,6 +1389,7 @@ pub const TaiTable = struct {
                     .end = .{ .index = items.len - 1, .player_id = .player_2 },
                 };
             }
+            selection.* = selection.clampIndices(items.len);
             if (self.editor.swapSides()) {
                 if (selection.start.player_id == selection.end.player_id) {
                     selection.start.player_id = selection.start.player_id.getOther();
@@ -1367,7 +1409,7 @@ pub const TaiTable = struct {
             };
             const things: Things = if (index_maybe) |index| block: {
                 break :block switch (selection.isIndexInside(index)) {
-                    true => switch (selection.getNumberOfRows()) {
+                    true => switch (selection.clampIndices(items.len).getNumberOfRows()) {
                         1 => .selected_row,
                         else => |n| .{ .selected_rows = n },
                     },
@@ -1389,7 +1431,7 @@ pub const TaiTable = struct {
         }
     }
 
-    fn handleSwapShortcut(self: *Self) void {
+    fn handleSwapShortcut(self: *Self, items: Items) void {
         if (self.state != .idle) {
             return;
         }
@@ -1401,6 +1443,7 @@ pub const TaiTable = struct {
         const selection = &self.editor.selection;
         if (selection.start.player_id == selection.end.player_id) {
             if (left_pressed and !right_pressed and selection.start.player_id == .player_2) {
+                selection.* = selection.clampIndices(items.len);
                 if (self.editor.swapSides()) {
                     selection.start.player_id = .player_1;
                     selection.end.player_id = .player_1;
@@ -1410,6 +1453,7 @@ pub const TaiTable = struct {
                 }
             }
             if (right_pressed and !left_pressed and selection.start.player_id == .player_1) {
+                selection.* = selection.clampIndices(items.len);
                 if (self.editor.swapSides()) {
                     selection.start.player_id = .player_2;
                     selection.end.player_id = .player_2;
@@ -1419,6 +1463,7 @@ pub const TaiTable = struct {
                 }
             }
         } else if (left_pressed != right_pressed) {
+            selection.* = selection.clampIndices(items.len);
             self.editor.swapSides() catch |err| {
                 sdk.misc.error_context.append("Failed to swap input sides.", .{});
                 sdk.misc.error_context.logError(err);
@@ -1482,7 +1527,7 @@ pub const TaiTable = struct {
         };
     }
 
-    fn drawDeleteButton(self: *Self, index: usize) void {
+    fn drawDeleteButton(self: *Self, index: usize, items: Items) void {
         imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
         defer imgui.igPopStyleVar(1);
 
@@ -1494,6 +1539,7 @@ pub const TaiTable = struct {
                     .end = .{ .index = index, .player_id = .player_2 },
                 };
             }
+            selection.* = selection.clampIndices(items.len);
             self.editor.deleteRows() catch |err| {
                 sdk.misc.error_context.append("Failed to delete rows.", .{});
                 sdk.misc.error_context.logError(err);
@@ -1509,7 +1555,7 @@ pub const TaiTable = struct {
                 selected_rows: usize,
             };
             const things: Things = switch (selection.isIndexInside(index)) {
-                true => switch (selection.getNumberOfRows()) {
+                true => switch (selection.clampIndices(items.len).getNumberOfRows()) {
                     1 => .selected_row,
                     else => |n| .{ .selected_rows = n },
                 },
@@ -1525,7 +1571,7 @@ pub const TaiTable = struct {
         }
     }
 
-    fn handleDeleteShortcut(self: *Self) void {
+    fn handleDeleteShortcut(self: *Self, items: Items) void {
         if (self.state != .idle) {
             return;
         }
@@ -1535,11 +1581,15 @@ pub const TaiTable = struct {
         if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Delete, false)) {
             return;
         }
+        if (items.len == 0) {
+            return;
+        }
+        const selection = &self.editor.selection;
+        selection.* = selection.clampIndices(items.len);
         self.editor.deleteRows() catch |err| {
             sdk.misc.error_context.append("Failed to delete rows.", .{});
             sdk.misc.error_context.logError(err);
         };
-        const selection = &self.editor.selection;
         const min_index = selection.getMinIndex();
         selection.start.index = min_index;
         selection.end.index = min_index;

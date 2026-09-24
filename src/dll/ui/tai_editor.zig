@@ -24,6 +24,13 @@ pub const TaiEditor = struct {
             .end = .{ .index = 0, .player_id = .player_1 },
         };
 
+        pub fn clampIndices(self: *const Selection, len: usize) Selection {
+            var clamped = self.*;
+            clamped.start.index = @min(clamped.start.index, len -| 1);
+            clamped.end.index = @min(clamped.end.index, len -| 1);
+            return clamped;
+        }
+
         pub fn getMinPlayerId(self: *const Selection) model.PlayerId {
             if (self.start.player_id == self.end.player_id) {
                 return self.start.player_id;
