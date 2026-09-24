@@ -158,19 +158,6 @@ pub const TaiEditor = struct {
         return self.addUncommittedChange(&change);
     }
 
-    pub fn setValue(self: *Self, player_id: model.PlayerId, index: usize, value: model.Input) !void {
-        const change = Change{ .set_value = .{
-            .player_id = player_id,
-            .index = index,
-            .old_value = .{},
-            .new_value = value,
-        } };
-        self.addUncommittedChange(&change) catch |err| {
-            sdk.misc.error_context.append("Failed to add move rows uncommitted change.", .{});
-            return err;
-        };
-    }
-
     pub fn setValues(self: *Self, value: model.Input) !void {
         const player_ids: []const model.PlayerId = switch (self.selection.start.player_id == self.selection.end.player_id) {
             true => &[1]model.PlayerId{self.selection.start.player_id},
@@ -453,7 +440,7 @@ const Change = union(enum) {
                 return error.IndexOutOfBounds;
             }
             tai.sequence.insert(tai.allocator, self.index, self.new_values) catch |err| {
-                sdk.misc.error_context.append(
+                sdk.misc.error_context.new(
                     "Failed to insert a item into the tool assisted input sequence at index: {}",
                     .{self.index},
                 );
@@ -511,19 +498,19 @@ const Change = union(enum) {
                 return;
             }
             const source_end = std.math.add(usize, self.source_index, self.number_of_rows) catch |err| {
-                sdk.misc.error_context.append("Failed to calculate source end index.", .{});
+                sdk.misc.error_context.new("Failed to calculate source end index.", .{});
                 return err;
             };
             if (source_end > items.len) {
-                sdk.misc.error_context.append("Source index range out of bounds.", .{});
+                sdk.misc.error_context.new("Source index range out of bounds.", .{});
                 return error.IndexOutOfBounds;
             }
             const destination_end = std.math.add(usize, self.destination_index, self.number_of_rows) catch |err| {
-                sdk.misc.error_context.append("Failed to calculate destination end index.", .{});
+                sdk.misc.error_context.new("Failed to calculate destination end index.", .{});
                 return err;
             };
             if (destination_end > items.len) {
-                sdk.misc.error_context.append("Destination index range out of bounds.", .{});
+                sdk.misc.error_context.new("Destination index range out of bounds.", .{});
                 return error.IndexOutOfBounds;
             }
             const swap = switch (self.columns) {
@@ -615,11 +602,11 @@ const Change = union(enum) {
             }
             const start = self.index;
             const end = std.math.add(usize, start, self.number_of_rows) catch |err| {
-                sdk.misc.error_context.append("Failed to calculate end index.", .{});
+                sdk.misc.error_context.new("Failed to calculate end index.", .{});
                 return err;
             };
             if (end > tai.sequence.items.len) {
-                sdk.misc.error_context.append("Index range out of bounds.", .{});
+                sdk.misc.error_context.new("Index range out of bounds.", .{});
                 return error.IndexOutOfBounds;
             }
             for (tai.sequence.items[start..end]) |*item| {
@@ -1156,75 +1143,6 @@ test "swapSides should should swap values between player 1 and player on selecte
         .{ .player_1 = .{ .down = true }, .player_2 = .{ .button_2 = true } },
         .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
         .{ .player_1 = .{ .button_4 = true }, .player_2 = .{ .back = true } },
-    }, tai.sequence.items);
-}
-
-test "setValue should set value at specified index and player_id to specified value" {
-    var editor = TaiEditor.init(testing.allocator);
-    defer editor.deinit();
-    var tai = core.ToolAssistedInput.init(testing.allocator);
-    defer tai.deinit();
-    try tai.sequence.appendSlice(testing.allocator, &.{
-        .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
-        .{ .player_1 = .{ .down = true }, .player_2 = .{ .button_2 = true } },
-        .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
-        .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
-    });
-
-    try editor.setValue(.player_1, 1, .{ .rage = true });
-    try editor.commit(&tai);
-
-    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
-        .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
-        .{ .player_1 = .{ .rage = true }, .player_2 = .{ .button_2 = true } },
-        .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
-        .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
-    }, tai.sequence.items);
-
-    try editor.setValue(.player_2, 2, .{ .heat = true });
-    try editor.commit(&tai);
-
-    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
-        .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
-        .{ .player_1 = .{ .rage = true }, .player_2 = .{ .button_2 = true } },
-        .{ .player_1 = .{ .forward = true }, .player_2 = .{ .heat = true } },
-        .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
-    }, tai.sequence.items);
-
-    try editor.undo(&tai);
-
-    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
-        .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
-        .{ .player_1 = .{ .rage = true }, .player_2 = .{ .button_2 = true } },
-        .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
-        .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
-    }, tai.sequence.items);
-
-    try editor.undo(&tai);
-
-    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
-        .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
-        .{ .player_1 = .{ .down = true }, .player_2 = .{ .button_2 = true } },
-        .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
-        .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
-    }, tai.sequence.items);
-
-    try editor.redo(&tai);
-
-    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
-        .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
-        .{ .player_1 = .{ .rage = true }, .player_2 = .{ .button_2 = true } },
-        .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
-        .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
-    }, tai.sequence.items);
-
-    try editor.redo(&tai);
-
-    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
-        .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
-        .{ .player_1 = .{ .rage = true }, .player_2 = .{ .button_2 = true } },
-        .{ .player_1 = .{ .forward = true }, .player_2 = .{ .heat = true } },
-        .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
 }
 
