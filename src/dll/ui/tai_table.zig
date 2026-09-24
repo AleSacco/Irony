@@ -751,6 +751,11 @@ pub const TaiTable = struct {
             imgui.ImGuiMod_Shift => .up,
             else => return,
         };
+        const selection = &self.editor.selection;
+        if (selection.start.index == items.len and selection.end.index == items.len) {
+            return;
+        }
+        selection.* = selection.clampIndices(items.len);
         self.editor.setValues(.{}) catch |err| {
             sdk.misc.error_context.append("Failed to set table values.", .{});
             sdk.misc.error_context.logError(err);
@@ -763,7 +768,7 @@ pub const TaiTable = struct {
         if (direction == .down and next_cell.index < items.len) {
             next_cell.index += 1;
         }
-        self.editor.selection = .{ .start = next_cell, .end = next_cell };
+        selection.* = .{ .start = next_cell, .end = next_cell };
     }
 
     fn handleEditShortcut(self: *Self, items: Items) void {
