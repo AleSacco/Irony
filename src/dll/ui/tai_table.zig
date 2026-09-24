@@ -95,13 +95,12 @@ pub const TaiTable = struct {
 
         if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows)) {
             self.handleKeyboardSelect(tai.sequence.items);
-            self.handleCancelShortcut();
             self.handleClearValuesShortcut(tai.sequence.items);
             self.handleEditShortcut(tai.sequence.items);
             self.handleConfirmEditShortcut(tai.sequence.items);
             self.handleEnabledShortcut(enable_player_1, .player_1);
             self.handleEnabledShortcut(enable_player_2, .player_2);
-            self.handleMenuShortcut();
+            self.handleCancelShortcut();
             self.handleUndoShortcut(tai);
             self.handleRedoShortcut(tai);
             self.handleImportShortcut(tai, controller);
@@ -125,7 +124,7 @@ pub const TaiTable = struct {
         if (imgui.igTableNextColumn()) {
             imgui.igPushID_Str("move");
             defer imgui.igPopID();
-            drawMenuButton();
+            self.drawCancelButton();
             imgui.igSameLine(0, 0);
             imgui.igTableHeader("");
         }
@@ -722,13 +721,6 @@ pub const TaiTable = struct {
         self.state = .{ .editing = .{ .text_buffer = buffer, .select_all = true } };
     }
 
-    fn handleCancelShortcut(self: *Self) void {
-        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Escape, false)) {
-            return;
-        }
-        self.state = .idle;
-    }
-
     fn handleClearValuesShortcut(self: *Self, items: Items) void {
         if (self.state != .idle) {
             return;
@@ -936,29 +928,39 @@ pub const TaiTable = struct {
         enabled.* = !enabled.*;
     }
 
-    fn drawMenuButton() void {
+    fn isCancelDisabled(self: *const Self) bool {
+        return switch (self.state) {
+            .idle, .selecting => true,
+            .moving, .editing, .confirming => false,
+        };
+    }
+
+    fn drawCancelButton(self: *Self) void {
         imgui.igPushStyleVar_Vec2(imgui.ImGuiStyleVar_FramePadding, .{});
         defer imgui.igPopStyleVar(1);
 
-        if (imgui.igButton(" ≡ ###menu", .{})) {
-            // TODO
-        }
-        if (imgui.igIsItemHovered(0)) {
-            imgui.igSetTooltip("Menu [Ctrl + M]");
+        imgui.igBeginDisabled(self.isCancelDisabled());
+        defer imgui.igEndDisabled();
+
+        _ = imgui.igButton(" ❌ ###cancel", .{});
+        if (imgui.igIsItemHovered(imgui.ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+            const mouse_pressed = imgui.igIsMouseClicked_Bool(imgui.ImGuiMouseButton_Left, false);
+            const mouse_released = imgui.igIsMouseReleased_Nil(imgui.ImGuiMouseButton_Left);
+            if (mouse_pressed or mouse_released) {
+                self.state = .idle;
+            }
+            imgui.igSetTooltip("Cancel [Esc]");
         }
     }
 
-    fn handleMenuShortcut(self: *const Self) void {
-        if (self.state != .idle) {
+    fn handleCancelShortcut(self: *Self) void {
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Escape, false)) {
             return;
         }
-        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Ctrl) {
+        if (self.isCancelDisabled()) {
             return;
         }
-        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_M, false)) {
-            return;
-        }
-        // TODO
+        self.state = .idle;
     }
 
     fn isUndoDisabled(self: *const Self) bool {
