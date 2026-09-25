@@ -680,6 +680,11 @@ pub const Details = struct {
         if (!render_content) return;
         defer imgui.igEndTable();
 
+        const header_color = imgui.igGetStyle().*.Colors[imgui.ImGuiCol_Header];
+        imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderHovered, header_color);
+        imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderActive, header_color);
+        defer imgui.igPopStyleColor(2);
+
         imgui.igTableSetupScrollFreeze(0, 1);
         imgui.igTableSetupColumn("Property", 0, 0, 0);
         imgui.igTableSetupColumn(getHeaderName(settings.column_1), 0, 0, 0);
@@ -1237,7 +1242,10 @@ fn drawText(text: [:0]const u8, alpha: f32) void {
     imgui.igGetItemRectMax(&rect.Max);
     _ = imgui.igItemAdd(rect, imgui.igGetID_Str(text), null, imgui.ImGuiItemFlags_NoNav);
 
-    if (imgui.igIsItemClicked(imgui.ImGuiMouseButton_Left)) {
+    const cell_hovered = imgui.igTableGetHoveredColumn() == imgui.igTableGetColumnIndex() and
+        imgui.igTableGetHoveredRow() == imgui.igTableGetRowIndex();
+    const mouse_clicked = imgui.igIsMouseClicked_Bool(imgui.ImGuiMouseButton_Left, false);
+    if (cell_hovered and mouse_clicked) {
         imgui.igSetClipboardText(text);
         sdk.ui.toasts.send(.info, null, "Copied to clipboard: {s}", .{text});
     }

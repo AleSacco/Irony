@@ -123,10 +123,16 @@ pub const TaiTable = struct {
         imgui.igTableSetupColumn("player_2_input", imgui.ImGuiTableColumnFlags_WidthStretch, 0, 0);
         imgui.igTableSetupColumn("buttons", imgui.ImGuiTableColumnFlags_WidthFixed, 0, 0);
 
+        const header_color = imgui.igGetStyle().*.Colors[imgui.ImGuiCol_TableHeaderBg];
+
         var player_divide_screen_x: f32 = 0;
         if (imgui.igTableNextColumn()) {
             imgui.igPushID_Str("move");
             defer imgui.igPopID();
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderHovered, header_color);
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderActive, header_color);
+            defer imgui.igPopStyleColor(2);
+
             self.drawCancelButton();
             imgui.igSameLine(0, 0);
             imgui.igTableHeader("");
@@ -134,6 +140,7 @@ pub const TaiTable = struct {
         if (imgui.igTableNextColumn()) {
             imgui.igPushID_Str("player_1_input");
             defer imgui.igPopID();
+
             drawEnabledCheckbox(enable_player_1, .player_1);
             imgui.igSameLine(0, imgui.igGetStyle().*.ItemInnerSpacing.x);
             imgui.igTableHeader("Player 1");
@@ -141,6 +148,10 @@ pub const TaiTable = struct {
         if (imgui.igTableNextColumn()) {
             imgui.igPushID_Str("player_1_animation_frame");
             defer imgui.igPopID();
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderHovered, header_color);
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderActive, header_color);
+            defer imgui.igPopStyleColor(2);
+
             self.drawUndoButton(tai);
             imgui.igSameLine(0, 0);
             imgui.igTableHeader("");
@@ -154,13 +165,25 @@ pub const TaiTable = struct {
 
             imgui.igPushID_Str("swap");
             defer imgui.igPopID();
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderHovered, header_color);
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderActive, header_color);
+            defer imgui.igPopStyleColor(2);
+
             self.drawSwapButton(null, tai.sequence.items);
             imgui.igSameLine(0, 0);
             imgui.igTableHeader("");
         }
         if (imgui.igTableNextColumn()) {
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderHovered, header_color);
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderActive, header_color);
+            defer imgui.igPopStyleColor(2);
+
             imgui.igPushID_Str("player_2_animation_frame");
             defer imgui.igPopID();
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderHovered, header_color);
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderActive, header_color);
+            defer imgui.igPopStyleColor(2);
+
             self.drawRedoButton(tai);
             imgui.igSameLine(0, 0);
             imgui.igTableHeader("");
@@ -168,6 +191,7 @@ pub const TaiTable = struct {
         if (imgui.igTableNextColumn()) {
             imgui.igPushID_Str("player_2_input");
             defer imgui.igPopID();
+
             drawEnabledCheckbox(enable_player_2, .player_2);
             imgui.igSameLine(0, imgui.igGetStyle().*.ItemInnerSpacing.x);
             imgui.igTableHeader("Player 2");
@@ -175,6 +199,10 @@ pub const TaiTable = struct {
         if (imgui.igTableNextColumn()) {
             imgui.igPushID_Str("buttons");
             defer imgui.igPopID();
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderHovered, header_color);
+            imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderActive, header_color);
+            defer imgui.igPopStyleColor(2);
+
             self.drawImportButton(tai, controller);
             imgui.igSameLine(0, imgui.igGetStyle().*.ItemInnerSpacing.x);
             self.drawClearButton(tai);
@@ -200,7 +228,7 @@ pub const TaiTable = struct {
                     &clipper,
                     tai.sequence.items,
                 );
-                const frame_maybe = if (index < tai.sequence.items.len) controller.getFrameAt(index) else null;
+                const frame_maybe = controller.getFrameAt(index);
 
                 if (imgui.igTableNextColumn() and moved_index < tai.sequence.items.len) {
                     self.drawMoveButton(moved_index, tai.sequence.items);
@@ -217,7 +245,7 @@ pub const TaiTable = struct {
                 }
                 if (imgui.igTableNextColumn() and index < tai.sequence.items.len) {
                     if (frame_maybe) |frame| {
-                        drawAnimationFrameCellContent(.player_1, index, frame);
+                        drawAnimationFrameCellContent(.player_1, frame);
                     }
                 }
                 if (imgui.igTableNextColumn() and index < tai.sequence.items.len) {
@@ -225,7 +253,7 @@ pub const TaiTable = struct {
                 }
                 if (imgui.igTableNextColumn() and index < tai.sequence.items.len) {
                     if (frame_maybe) |frame| {
-                        drawAnimationFrameCellContent(.player_2, index, frame);
+                        drawAnimationFrameCellContent(.player_2, frame);
                     }
                 }
                 if (imgui.igTableNextColumn()) {
@@ -399,6 +427,7 @@ pub const TaiTable = struct {
                 break :block .normal;
             }
         };
+
         const cell_color = switch (cell_type) {
             .normal => if (frame_maybe) |frame| block: {
                 break :block switch (frame.getPlayerById(player_id).can_interact orelse true) {
@@ -517,7 +546,7 @@ pub const TaiTable = struct {
         }
     }
 
-    fn drawAnimationFrameCellContent(player_id: model.PlayerId, index: usize, frame: *const model.Frame) void {
+    fn drawAnimationFrameCellContent(player_id: model.PlayerId, frame: *const model.Frame) void {
         const player: *const model.Player = frame.getPlayerById(player_id);
 
         if (player.move_phase) |move_phase| {
@@ -544,7 +573,7 @@ pub const TaiTable = struct {
         }
 
         const cell_hovered = imgui.igTableGetHoveredColumn() == imgui.igTableGetColumnIndex() and
-            imgui.igTableGetHoveredRow() == index +| 1;
+            imgui.igTableGetHoveredRow() == imgui.igTableGetRowIndex();
         if (cell_hovered and imgui.igBeginTooltip()) {
             defer imgui.igEndTooltip();
             if (player.animation_id) |animation_id| {
@@ -920,7 +949,14 @@ pub const TaiTable = struct {
         defer imgui.igPopStyleVar(1);
 
         _ = imgui.igCheckbox("##enabled", enabled);
-        if (imgui.igIsItemHovered(0)) {
+
+        const cell_hovered = imgui.igTableGetHoveredColumn() == imgui.igTableGetColumnIndex() and
+            imgui.igTableGetHoveredRow() == imgui.igTableGetRowIndex();
+        const check_hovered = imgui.igIsItemHovered(0);
+        if (cell_hovered and !check_hovered and imgui.igIsMouseClicked_Bool(imgui.ImGuiMouseButton_Left, false)) {
+            enabled.* = !enabled.*;
+        }
+        if (cell_hovered or check_hovered) {
             const tooltip = switch (enabled.*) {
                 false => switch (player_id) {
                     .player_1 => "Enable player 1 input simulation. [Ctrl + 1]",
