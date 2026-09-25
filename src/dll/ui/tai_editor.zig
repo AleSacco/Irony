@@ -59,6 +59,14 @@ pub const TaiEditor = struct {
             return self.getMaxIndex() - self.getMinIndex() + 1;
         }
 
+        pub fn getNumberOfColumns(self: *const Selection) usize {
+            return if (self.start.player_id == self.end.player_id) 1 else 2;
+        }
+
+        pub fn getNumberOfCells(self: *const Selection) usize {
+            return self.getNumberOfRows() * self.getNumberOfColumns();
+        }
+
         pub fn isPlayerIdInside(self: *const Selection, player_id: model.PlayerId) bool {
             return player_id == self.start.player_id or player_id == self.end.player_id;
         }
@@ -199,6 +207,146 @@ pub const TaiEditor = struct {
             }
             index += 1;
         }
+    }
+
+    pub fn copy(
+        self: *const Self,
+        setClipboardText: *const fn (text: [:0]const u8) void,
+        tai: *const core.ToolAssistedInput,
+    ) !void {
+        const selection = &self.selection;
+        if (selection.getMaxIndex() >= tai.sequence.items.len) {
+            sdk.misc.error_context.new("Selection index range out of bounds.", .{});
+            return error.IndexOutOfBounds;
+        }
+        const max_bytes_per_value = 20;
+        const number_of_values = selection.getNumberOfCells();
+        const buffer = self.allocator.alloc(u8, max_bytes_per_value * number_of_values) catch |err| {
+            sdk.misc.error_context.new("Failed to allocate buffer to copy into.", .{});
+            return err;
+        };
+        defer self.allocator.free(buffer);
+
+        var writer = std.Io.Writer.fixed(buffer);
+        const player_ids: []const model.PlayerId = switch (selection.start.player_id == selection.end.player_id) {
+            true => switch (selection.start.player_id) {
+                .player_1 => &.{.player_1},
+                .player_2 => &.{.player_2},
+            },
+            else => &.{ .player_1, .player_2 },
+        };
+        var index = self.selection.getMinIndex();
+        while (index <= self.selection.getMaxIndex()) : (index += 1) {
+            const item = &tai.sequence.items[index];
+            for (player_ids, 0..) |player_id, i| {
+                const value = switch (player_id) {
+                    .player_1 => item.player_1,
+                    .player_2 => item.player_2,
+                };
+                writer.print("{f}", .{value}) catch |err| {
+                    sdk.misc.error_context.new(
+                        "Failed to write {s} input at index: {}",
+                        .{ @tagName(player_id), index },
+                    );
+                    return err;
+                };
+                if (i < player_ids.len - 1) {
+                    writer.writeByte('\t') catch |err| {
+                        sdk.misc.error_context.new("Failed to write tab character at index: {}", .{index});
+                        return err;
+                    };
+                }
+            }
+            writer.writeByte('\n') catch |err| {
+                sdk.misc.error_context.new("Failed to write new line character at index: {}", .{index});
+                return err;
+            };
+        }
+        writer.writeByte(0) catch |err| {
+            sdk.misc.error_context.new("Failed to write the 0 terminator at the end of the string.", .{});
+            return err;
+        };
+        setClipboardText(buffer[0..(writer.end - 1) :0]);
+    }
+
+    pub fn paste(self: *Self, text: [:0]const u8, tai: *const core.ToolAssistedInput) !Selection {
+        const text_with_null: []const u8 = text[0..(text.len + 1)];
+
+        var number_of_changes_added: usize = 0;
+        errdefer for (0..number_of_changes_added) |_| {
+            self.removeLastUncommittedChange();
+        };
+
+        const starting_row_index = self.selection.getMinIndex();
+        const starting_column = self.selection.getMinPlayerId();
+        var current_row_index = starting_row_index;
+        var current_column: ?model.PlayerId = starting_column;
+        var max_column = starting_column;
+        var value_start_text_index: usize = 0;
+        for (text_with_null, 0..) |byte, current_text_index| {
+            if (byte != '\t' and byte != '\n' and byte != 0) {
+                continue;
+            }
+            if (byte == 0 and current_text_index > 0 and text[current_text_index - 1] == '\n') {
+                if (current_row_index > starting_row_index) {
+                    current_row_index -= 1;
+                }
+                break;
+            }
+            if (current_column) |player_id| {
+                const value_text = text[value_start_text_index..current_text_index];
+                const value = model.Input.parse(value_text);
+                const change: Change = block: {
+                    if (current_row_index >= tai.sequence.items.len and player_id == starting_column) {
+                        break :block .{ .insert_row = .{
+                            .index = current_row_index,
+                            .new_values = switch (player_id) {
+                                .player_1 => .{ .player_1 = value, .player_2 = .{} },
+                                .player_2 => .{ .player_1 = .{}, .player_2 = value },
+                            },
+                        } };
+                    } else {
+                        break :block .{ .set_value = .{
+                            .player_id = player_id,
+                            .index = current_row_index,
+                            .old_value = .{},
+                            .new_value = value,
+                        } };
+                    }
+                };
+                self.addUncommittedChange(&change) catch |err| {
+                    sdk.misc.error_context.append(
+                        "Failed to add the change for {s} at index {} to uncommitted changes.",
+                        .{ @tagName(player_id), current_row_index },
+                    );
+                    return err;
+                };
+                number_of_changes_added += 1;
+            }
+            value_start_text_index = current_text_index + 1;
+            switch (byte) {
+                0 => break,
+                '\t' => if (current_column) |player_id| switch (player_id) {
+                    .player_1 => {
+                        max_column = .player_2;
+                        current_column = .player_2;
+                    },
+                    .player_2 => {
+                        current_column = null;
+                    },
+                },
+                '\n' => {
+                    current_column = starting_column;
+                    current_row_index += 1;
+                },
+                else => unreachable,
+            }
+        }
+
+        return .{
+            .start = .{ .player_id = self.selection.getMinPlayerId(), .index = self.selection.getMinIndex() },
+            .end = .{ .player_id = max_column, .index = current_row_index },
+        };
     }
 
     fn addUncommittedChange(self: *Self, change: *const Change) !void {
@@ -1302,5 +1450,212 @@ test "setValues should set every cell the selection to the specified value" {
         .{ .player_1 = .{ .rage = true }, .player_2 = .{ .heat = true } },
         .{ .player_1 = .{ .rage = true }, .player_2 = .{ .heat = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .heat = true } },
+    }, tai.sequence.items);
+}
+
+test "copy should set clipboard text to the stringified version of the selection" {
+    var editor = TaiEditor.init(testing.allocator);
+    defer editor.deinit();
+    var tai = core.ToolAssistedInput.init(testing.allocator);
+    defer tai.deinit();
+    try tai.sequence.appendSlice(testing.allocator, &.{
+        .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .down = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
+        .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
+    });
+
+    const Clipboard = struct {
+        var data: ?[]u8 = null;
+
+        fn setText(text: [:0]const u8) void {
+            const copy = testing.allocator.alloc(u8, text.len) catch @panic("Failed to allocate clipboard data.");
+            @memcpy(copy, text);
+            deinit();
+            data = copy;
+        }
+
+        fn deinit() void {
+            if (data) |text| {
+                testing.allocator.free(text);
+            }
+        }
+    };
+    defer Clipboard.deinit();
+
+    editor.selection = .{
+        .start = .{ .index = 0, .player_id = .player_1 },
+        .end = .{ .index = 3, .player_id = .player_2 },
+    };
+    try editor.copy(Clipboard.setText, &tai);
+    try testing.expect(Clipboard.data != null);
+    try testing.expectEqualStrings("u\t1\nd\t2\nf\t3\nb\t4\n", Clipboard.data.?);
+
+    editor.selection = .{
+        .start = .{ .index = 2, .player_id = .player_2 },
+        .end = .{ .index = 1, .player_id = .player_1 },
+    };
+    try editor.copy(Clipboard.setText, &tai);
+    try testing.expect(Clipboard.data != null);
+    try testing.expectEqualStrings("d\t2\nf\t3\n", Clipboard.data.?);
+
+    editor.selection = .{
+        .start = .{ .index = 0, .player_id = .player_2 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    };
+    try editor.copy(Clipboard.setText, &tai);
+    try testing.expect(Clipboard.data != null);
+    try testing.expectEqualStrings("1\n2\n3\n", Clipboard.data.?);
+
+    editor.selection = .{
+        .start = .{ .index = 2, .player_id = .player_2 },
+        .end = .{ .index = 2, .player_id = .player_1 },
+    };
+    try editor.copy(Clipboard.setText, &tai);
+    try testing.expect(Clipboard.data != null);
+    try testing.expectEqualStrings("f\t3\n", Clipboard.data.?);
+
+    editor.selection = .{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 1, .player_id = .player_1 },
+    };
+    try editor.copy(Clipboard.setText, &tai);
+    try testing.expect(Clipboard.data != null);
+    try testing.expectEqualStrings("d\n", Clipboard.data.?);
+}
+
+test "paste should change the selection controlled part of sequence to match the provided text" {
+    var editor = TaiEditor.init(testing.allocator);
+    defer editor.deinit();
+    var tai = core.ToolAssistedInput.init(testing.allocator);
+    defer tai.deinit();
+
+    editor.selection = .{
+        .start = .{ .index = 0, .player_id = .player_2 },
+        .end = .{ .index = 0, .player_id = .player_2 },
+    };
+    editor.selection = try editor.paste("1\n2\t123\n3\n4", &tai);
+    try editor.commit(&tai);
+
+    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
+        .{ .player_1 = .{}, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{}, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{}, .player_2 = .{ .button_3 = true } },
+        .{ .player_1 = .{}, .player_2 = .{ .button_4 = true } },
+    }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 0, .player_id = .player_2 },
+        .end = .{ .index = 3, .player_id = .player_2 },
+    }, editor.selection);
+
+    editor.selection = .{
+        .start = .{ .index = 1, .player_id = .player_2 },
+        .end = .{ .index = 3, .player_id = .player_1 },
+    };
+    editor.selection = try editor.paste("1\t2\n3\t4\n", &tai);
+    try editor.commit(&tai);
+
+    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
+        .{ .player_1 = .{}, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_4 = true } },
+        .{ .player_1 = .{}, .player_2 = .{ .button_4 = true } },
+    }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    }, editor.selection);
+
+    editor.selection = .{
+        .start = .{ .index = 3, .player_id = .player_1 },
+        .end = .{ .index = 3, .player_id = .player_1 },
+    };
+    editor.selection = try editor.paste("1\t2\n3\t4", &tai);
+    try editor.commit(&tai);
+
+    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
+        .{ .player_1 = .{}, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_4 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_4 = true } },
+    }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 3, .player_id = .player_1 },
+        .end = .{ .index = 4, .player_id = .player_2 },
+    }, editor.selection);
+
+    editor.selection = .{
+        .start = .{ .index = 4, .player_id = .player_2 },
+        .end = .{ .index = 4, .player_id = .player_2 },
+    };
+    editor.selection = try editor.paste("1\t2\n3\t4\n", &tai);
+    try editor.commit(&tai);
+
+    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
+        .{ .player_1 = .{}, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_4 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{}, .player_2 = .{ .button_3 = true } },
+    }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 4, .player_id = .player_2 },
+        .end = .{ .index = 5, .player_id = .player_2 },
+    }, editor.selection);
+
+    editor.selection = .{
+        .start = .{ .index = 6, .player_id = .player_1 },
+        .end = .{ .index = 6, .player_id = .player_1 },
+    };
+    editor.selection = try editor.paste("1234\n1234", &tai);
+    try editor.commit(&tai);
+
+    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
+        .{ .player_1 = .{}, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_4 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{}, .player_2 = .{ .button_3 = true } },
+        .{ .player_1 = .{ .button_1 = true, .button_2 = true, .button_3 = true, .button_4 = true }, .player_2 = .{} },
+        .{ .player_1 = .{ .button_1 = true, .button_2 = true, .button_3 = true, .button_4 = true }, .player_2 = .{} },
+    }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 6, .player_id = .player_1 },
+        .end = .{ .index = 7, .player_id = .player_1 },
+    }, editor.selection);
+
+    try editor.undo(&tai);
+
+    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
+        .{ .player_1 = .{}, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_4 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{}, .player_2 = .{ .button_3 = true } },
+    }, tai.sequence.items);
+
+    try editor.undo(&tai);
+
+    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
+        .{ .player_1 = .{}, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_4 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_4 = true } },
+    }, tai.sequence.items);
+
+    try editor.redo(&tai);
+
+    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
+        .{ .player_1 = .{}, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_4 = true } },
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{}, .player_2 = .{ .button_3 = true } },
     }, tai.sequence.items);
 }

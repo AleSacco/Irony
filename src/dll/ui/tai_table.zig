@@ -110,6 +110,8 @@ pub const TaiTable = struct {
             self.handleSwapShortcut(tai.sequence.items);
             self.handleInsertShortcut();
             self.handleDeleteShortcut(tai.sequence.items);
+            self.handleCopyShortcut(tai);
+            self.handlePasteShortcut(tai);
         }
 
         imgui.igTableSetupScrollFreeze(0, 1);
@@ -1646,6 +1648,56 @@ pub const TaiTable = struct {
         const min_index = selection.getMinIndex();
         selection.start.index = min_index;
         selection.end.index = min_index;
+    }
+
+    fn handleCopyShortcut(self: *Self, tai: *const core.ToolAssistedInput) void {
+        if (self.state != .idle) {
+            return;
+        }
+        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Ctrl) {
+            return;
+        }
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_C, false)) {
+            return;
+        }
+        if (tai.sequence.items.len == 0) {
+            return;
+        }
+        const setClipboardText = struct {
+            fn call(text: [:0]const u8) void {
+                imgui.igSetClipboardText(text);
+            }
+        }.call;
+        const selection = &self.editor.selection;
+        selection.* = selection.clampIndices(tai.sequence.items.len);
+        if (self.editor.copy(setClipboardText, tai)) {
+            sdk.ui.toasts.send(.info, null, "Copied selection to clipboard.", .{});
+        } else |err| {
+            sdk.misc.error_context.append("Failed to copy selection.", .{});
+            sdk.misc.error_context.logError(err);
+        }
+    }
+
+    fn handlePasteShortcut(self: *Self, tai: *const core.ToolAssistedInput) void {
+        if (self.state != .idle) {
+            return;
+        }
+        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Ctrl) {
+            return;
+        }
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_V, false)) {
+            return;
+        }
+        const text = imgui.igGetClipboardText();
+        if (text == null) {
+            return;
+        }
+        const next_selection = self.editor.paste(std.mem.sliceTo(text, 0), tai) catch |err| {
+            sdk.misc.error_context.append("Failed to paste into table.", .{});
+            sdk.misc.error_context.logError(err);
+            return;
+        };
+        self.editor.selection = next_selection;
     }
 
     fn getHoveredCell() ?ui.TaiEditor.Selection.Cell {
