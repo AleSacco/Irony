@@ -1347,19 +1347,10 @@ pub const TaiTable = struct {
         if (source_min_index == destination_min_index) {
             return;
         }
-        const destination_max_index = destination_min_index + selection.getNumberOfRows() - 1;
         self.editor.move(destination_min_index) catch |err| {
             sdk.misc.error_context.append("Failed move inputs.", .{});
             sdk.misc.error_context.logError(err);
-            return;
         };
-        if (selection.start.index <= selection.end.index) {
-            selection.start.index = destination_min_index;
-            selection.end.index = destination_max_index;
-        } else {
-            selection.start.index = destination_max_index;
-            selection.end.index = destination_min_index;
-        }
     }
 
     fn findSimulatedMoveIndex(
@@ -1438,23 +1429,17 @@ pub const TaiTable = struct {
         const max_index = selection.getMaxIndex();
         if (up_pressed and !down_pressed and min_index > 0) {
             selection.* = selection.clampIndices(items.len);
-            if (self.editor.move(min_index - 1)) {
-                selection.start.index -= 1;
-                selection.end.index -= 1;
-            } else |err| {
+            self.editor.move(min_index - 1) catch |err| {
                 sdk.misc.error_context.append("Failed move inputs.", .{});
                 sdk.misc.error_context.logError(err);
-            }
+            };
         }
         if (down_pressed and !up_pressed and max_index + 1 < items.len) {
             selection.* = selection.clampIndices(items.len);
-            if (self.editor.move(min_index + 1)) {
-                selection.start.index += 1;
-                selection.end.index += 1;
-            } else |err| {
+            self.editor.move(min_index + 1) catch |err| {
                 sdk.misc.error_context.append("Failed move inputs.", .{});
                 sdk.misc.error_context.logError(err);
-            }
+            };
         }
     }
 
@@ -1481,15 +1466,10 @@ pub const TaiTable = struct {
                 };
             }
             selection.* = selection.clampIndices(items.len);
-            if (self.editor.swapSides()) {
-                if (selection.start.player_id == selection.end.player_id) {
-                    selection.start.player_id = selection.start.player_id.getOther();
-                    selection.end.player_id = selection.end.player_id.getOther();
-                }
-            } else |err| {
+            self.editor.swapSides() catch |err| {
                 sdk.misc.error_context.append("Failed to swap input sides.", .{});
                 sdk.misc.error_context.logError(err);
-            }
+            };
         }
         if (imgui.igIsItemHovered(0)) {
             const Things = union(enum) {
@@ -1532,28 +1512,20 @@ pub const TaiTable = struct {
         const left_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_LeftArrow, false);
         const right_pressed = imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_RightArrow, false);
         const selection = &self.editor.selection;
-        if (selection.start.player_id == selection.end.player_id) {
-            if (left_pressed and !right_pressed and selection.start.player_id == .player_2) {
-                selection.* = selection.clampIndices(items.len);
-                if (self.editor.swapSides()) {
-                    selection.start.player_id = .player_1;
-                    selection.end.player_id = .player_1;
-                } else |err| {
-                    sdk.misc.error_context.append("Failed to swap input sides.", .{});
-                    sdk.misc.error_context.logError(err);
+        const swap = block: {
+            if (selection.start.player_id == selection.end.player_id) {
+                if (left_pressed and !right_pressed and selection.start.player_id == .player_2) {
+                    break :block true;
                 }
-            }
-            if (right_pressed and !left_pressed and selection.start.player_id == .player_1) {
-                selection.* = selection.clampIndices(items.len);
-                if (self.editor.swapSides()) {
-                    selection.start.player_id = .player_2;
-                    selection.end.player_id = .player_2;
-                } else |err| {
-                    sdk.misc.error_context.append("Failed to swap input sides.", .{});
-                    sdk.misc.error_context.logError(err);
+                if (right_pressed and !left_pressed and selection.start.player_id == .player_1) {
+                    break :block true;
                 }
+            } else if (left_pressed != right_pressed) {
+                break :block true;
             }
-        } else if (left_pressed != right_pressed) {
+            break :block false;
+        };
+        if (swap) {
             selection.* = selection.clampIndices(items.len);
             self.editor.swapSides() catch |err| {
                 sdk.misc.error_context.append("Failed to swap input sides.", .{});
@@ -1609,7 +1581,7 @@ pub const TaiTable = struct {
         if (imgui.igGetIO_Nil().*.KeyMods != 0) {
             return;
         }
-        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Insert, false)) {
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Insert, true)) {
             return;
         }
         self.editor.insertRows() catch |err| {
@@ -1635,9 +1607,6 @@ pub const TaiTable = struct {
                 sdk.misc.error_context.append("Failed to delete rows.", .{});
                 sdk.misc.error_context.logError(err);
             };
-            const min_index = selection.getMinIndex();
-            selection.start.index = min_index;
-            selection.end.index = min_index;
         }
         if (imgui.igIsItemHovered(0)) {
             const Things = union(enum) {
@@ -1669,7 +1638,7 @@ pub const TaiTable = struct {
         if (imgui.igGetIO_Nil().*.KeyMods != 0) {
             return;
         }
-        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Delete, false)) {
+        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Delete, true)) {
             return;
         }
         if (items.len == 0) {
@@ -1681,9 +1650,6 @@ pub const TaiTable = struct {
             sdk.misc.error_context.append("Failed to delete rows.", .{});
             sdk.misc.error_context.logError(err);
         };
-        const min_index = selection.getMinIndex();
-        selection.start.index = min_index;
-        selection.end.index = min_index;
     }
 
     fn handleCopyShortcut(self: *Self, tai: *const core.ToolAssistedInput) void {
@@ -1728,12 +1694,11 @@ pub const TaiTable = struct {
         if (text == null) {
             return;
         }
-        const next_selection = self.editor.paste(std.mem.sliceTo(text, 0), tai) catch |err| {
+        self.editor.paste(std.mem.sliceTo(text, 0), tai) catch |err| {
             sdk.misc.error_context.append("Failed to paste into table.", .{});
             sdk.misc.error_context.logError(err);
             return;
         };
-        self.editor.selection = next_selection;
     }
 
     fn getHoveredCell() ?ui.TaiEditor.Selection.Cell {

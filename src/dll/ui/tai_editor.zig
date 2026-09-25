@@ -144,6 +144,8 @@ pub const TaiEditor = struct {
             }
             index -= 1;
         }
+        self.selection.start.index = min_index;
+        self.selection.end.index = min_index;
     }
 
     pub fn move(self: *Self, destination_min_index: usize) !void {
@@ -163,6 +165,14 @@ pub const TaiEditor = struct {
             sdk.misc.error_context.append("Failed to add move rows uncommitted change.", .{});
             return err;
         };
+        const destination_max_index = destination_min_index + self.selection.getNumberOfRows() - 1;
+        if (self.selection.start.index <= self.selection.end.index) {
+            self.selection.start.index = destination_min_index;
+            self.selection.end.index = destination_max_index;
+        } else {
+            self.selection.start.index = destination_max_index;
+            self.selection.end.index = destination_min_index;
+        }
     }
 
     pub fn swapSides(self: *Self) !void {
@@ -170,16 +180,24 @@ pub const TaiEditor = struct {
             .index = self.selection.getMinIndex(),
             .number_of_rows = self.selection.getNumberOfRows(),
         } };
-        return self.addUncommittedChange(&change);
+        self.addUncommittedChange(&change) catch |err| {
+            sdk.misc.error_context.append("Failed to add swap uncommitted change.", .{});
+            return err;
+        };
+        if (self.selection.start.player_id == self.selection.end.player_id) {
+            self.selection.start.player_id = self.selection.start.player_id.getOther();
+            self.selection.end.player_id = self.selection.end.player_id.getOther();
+        }
     }
 
     pub fn setValues(self: *Self, value: model.Input) !void {
-        const player_ids: []const model.PlayerId = switch (self.selection.start.player_id == self.selection.end.player_id) {
-            true => &[1]model.PlayerId{self.selection.start.player_id},
+        const selection = &self.selection;
+        const player_ids: []const model.PlayerId = switch (selection.start.player_id == selection.end.player_id) {
+            true => &[1]model.PlayerId{selection.start.player_id},
             false => &[2]model.PlayerId{ .player_1, .player_2 },
         };
-        const min_index = self.selection.getMinIndex();
-        const max_index = self.selection.getMaxIndex();
+        const min_index = selection.getMinIndex();
+        const max_index = selection.getMaxIndex();
         var number_of_changes_added: usize = 0;
         errdefer for (0..number_of_changes_added) |_| {
             self.removeLastUncommittedChange();
@@ -269,7 +287,7 @@ pub const TaiEditor = struct {
         setClipboardText(buffer[0..(writer.end - 1) :0]);
     }
 
-    pub fn paste(self: *Self, text: [:0]const u8, tai: *const core.ToolAssistedInput) !Selection {
+    pub fn paste(self: *Self, text: [:0]const u8, tai: *const core.ToolAssistedInput) !void {
         const text_with_null: []const u8 = text[0..(text.len + 1)];
 
         var number_of_changes_added: usize = 0;
@@ -343,7 +361,7 @@ pub const TaiEditor = struct {
             }
         }
 
-        return .{
+        self.selection = .{
             .start = .{ .player_id = self.selection.getMinPlayerId(), .index = self.selection.getMinIndex() },
             .end = .{ .player_id = max_column, .index = current_row_index },
         };
@@ -990,84 +1008,6 @@ test "canUndo and canRedo should return correct values" {
     try testing.expectEqual(false, editor.canRedo());
 }
 
-test "undo and redo should set the selection to the correct value" {
-    var editor = TaiEditor.init(testing.allocator);
-    defer editor.deinit();
-    var tai = core.ToolAssistedInput.init(testing.allocator);
-    defer tai.deinit();
-
-    editor.selection = .{
-        .start = .{ .index = 0, .player_id = .player_1 },
-        .end = .{ .index = 0, .player_id = .player_1 },
-    };
-    try editor.insertRows();
-    editor.selection = .{
-        .start = .{ .index = 0, .player_id = .player_2 },
-        .end = .{ .index = 0, .player_id = .player_2 },
-    };
-    try editor.commit(&tai);
-
-    editor.selection = .{
-        .start = .{ .index = 1, .player_id = .player_1 },
-        .end = .{ .index = 1, .player_id = .player_1 },
-    };
-    try editor.insertRows();
-    try editor.insertRows();
-    editor.selection = .{
-        .start = .{ .index = 1, .player_id = .player_2 },
-        .end = .{ .index = 1, .player_id = .player_2 },
-    };
-    try editor.commit(&tai);
-
-    editor.selection = .{
-        .start = .{ .index = 2, .player_id = .player_1 },
-        .end = .{ .index = 2, .player_id = .player_1 },
-    };
-    try editor.insertRows();
-    try editor.insertRows();
-    try editor.insertRows();
-    editor.selection = .{
-        .start = .{ .index = 2, .player_id = .player_2 },
-        .end = .{ .index = 2, .player_id = .player_2 },
-    };
-    try editor.commit(&tai);
-
-    try testing.expectEqual(TaiEditor.Selection{
-        .start = .{ .index = 2, .player_id = .player_2 },
-        .end = .{ .index = 2, .player_id = .player_2 },
-    }, editor.selection);
-    try editor.undo(&tai);
-    try testing.expectEqual(TaiEditor.Selection{
-        .start = .{ .index = 2, .player_id = .player_1 },
-        .end = .{ .index = 2, .player_id = .player_1 },
-    }, editor.selection);
-    try editor.undo(&tai);
-    try testing.expectEqual(TaiEditor.Selection{
-        .start = .{ .index = 1, .player_id = .player_1 },
-        .end = .{ .index = 1, .player_id = .player_1 },
-    }, editor.selection);
-    try editor.undo(&tai);
-    try testing.expectEqual(TaiEditor.Selection{
-        .start = .{ .index = 0, .player_id = .player_1 },
-        .end = .{ .index = 0, .player_id = .player_1 },
-    }, editor.selection);
-    try editor.redo(&tai);
-    try testing.expectEqual(TaiEditor.Selection{
-        .start = .{ .index = 0, .player_id = .player_2 },
-        .end = .{ .index = 0, .player_id = .player_2 },
-    }, editor.selection);
-    try editor.redo(&tai);
-    try testing.expectEqual(TaiEditor.Selection{
-        .start = .{ .index = 1, .player_id = .player_2 },
-        .end = .{ .index = 1, .player_id = .player_2 },
-    }, editor.selection);
-    try editor.redo(&tai);
-    try testing.expectEqual(TaiEditor.Selection{
-        .start = .{ .index = 2, .player_id = .player_2 },
-        .end = .{ .index = 2, .player_id = .player_2 },
-    }, editor.selection);
-}
-
 test "insertRows should insert empty rows at selected indices" {
     var editor = TaiEditor.init(testing.allocator);
     defer editor.deinit();
@@ -1095,6 +1035,10 @@ test "insertRows should insert empty rows at selected indices" {
         .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    }, editor.selection);
 
     editor.selection = .{
         .start = .{ .index = 6, .player_id = .player_1 },
@@ -1112,6 +1056,10 @@ test "insertRows should insert empty rows at selected indices" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
         .{ .player_1 = .{}, .player_2 = .{} },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 6, .player_id = .player_1 },
+        .end = .{ .index = 6, .player_id = .player_1 },
+    }, editor.selection);
 
     try editor.undo(&tai);
 
@@ -1123,6 +1071,10 @@ test "insertRows should insert empty rows at selected indices" {
         .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 6, .player_id = .player_1 },
+        .end = .{ .index = 6, .player_id = .player_1 },
+    }, editor.selection);
 
     try editor.undo(&tai);
 
@@ -1132,6 +1084,10 @@ test "insertRows should insert empty rows at selected indices" {
         .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.redo(&tai);
 
@@ -1143,6 +1099,10 @@ test "insertRows should insert empty rows at selected indices" {
         .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.redo(&tai);
 
@@ -1155,6 +1115,10 @@ test "insertRows should insert empty rows at selected indices" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
         .{ .player_1 = .{}, .player_2 = .{} },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 6, .player_id = .player_1 },
+        .end = .{ .index = 6, .player_id = .player_1 },
+    }, editor.selection);
 }
 
 test "deleteRows should delete rows at selected indices" {
@@ -1180,6 +1144,10 @@ test "deleteRows should delete rows at selected indices" {
         .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 1, .player_id = .player_2 },
+    }, editor.selection);
 
     editor.selection = .{
         .start = .{ .index = 1, .player_id = .player_1 },
@@ -1191,6 +1159,10 @@ test "deleteRows should delete rows at selected indices" {
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
         .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 1, .player_id = .player_1 },
+    }, editor.selection);
 
     try editor.undo(&tai);
 
@@ -1198,6 +1170,10 @@ test "deleteRows should delete rows at selected indices" {
         .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 1, .player_id = .player_1 },
+    }, editor.selection);
 
     try editor.undo(&tai);
 
@@ -1207,6 +1183,10 @@ test "deleteRows should delete rows at selected indices" {
         .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.redo(&tai);
 
@@ -1214,12 +1194,20 @@ test "deleteRows should delete rows at selected indices" {
         .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 1, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.redo(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
         .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 1, .player_id = .player_1 },
+    }, editor.selection);
 }
 
 test "move should move selected rows to specified destination index" {
@@ -1247,6 +1235,10 @@ test "move should move selected rows to specified destination index" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
         .{ .player_1 = .{ .down = true }, .player_2 = .{ .button_2 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 3, .player_id = .player_1 },
+        .end = .{ .index = 3, .player_id = .player_2 },
+    }, editor.selection);
 
     editor.selection = .{
         .start = .{ .index = 2, .player_id = .player_2 },
@@ -1261,6 +1253,10 @@ test "move should move selected rows to specified destination index" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_1 = true } },
         .{ .player_1 = .{ .down = true }, .player_2 = .{ .button_3 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 0, .player_id = .player_2 },
+        .end = .{ .index = 1, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.undo(&tai);
 
@@ -1270,6 +1266,10 @@ test "move should move selected rows to specified destination index" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
         .{ .player_1 = .{ .down = true }, .player_2 = .{ .button_2 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 2, .player_id = .player_2 },
+        .end = .{ .index = 3, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.undo(&tai);
 
@@ -1279,6 +1279,10 @@ test "move should move selected rows to specified destination index" {
         .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 1, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.redo(&tai);
 
@@ -1288,6 +1292,10 @@ test "move should move selected rows to specified destination index" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
         .{ .player_1 = .{ .down = true }, .player_2 = .{ .button_2 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 3, .player_id = .player_1 },
+        .end = .{ .index = 3, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.redo(&tai);
 
@@ -1297,9 +1305,13 @@ test "move should move selected rows to specified destination index" {
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_1 = true } },
         .{ .player_1 = .{ .down = true }, .player_2 = .{ .button_3 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 0, .player_id = .player_2 },
+        .end = .{ .index = 1, .player_id = .player_2 },
+    }, editor.selection);
 }
 
-test "swapSides should should swap values between player 1 and player on selected indices" {
+test "swapSides should should swap values between player 1 and player 2 on selected indices" {
     var editor = TaiEditor.init(testing.allocator);
     defer editor.deinit();
     var tai = core.ToolAssistedInput.init(testing.allocator);
@@ -1324,6 +1336,10 @@ test "swapSides should should swap values between player 1 and player on selecte
         .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .forward = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    }, editor.selection);
 
     editor.selection = .{
         .start = .{ .index = 0, .player_id = .player_2 },
@@ -1338,6 +1354,10 @@ test "swapSides should should swap values between player 1 and player on selecte
         .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
         .{ .player_1 = .{ .button_4 = true }, .player_2 = .{ .back = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 0, .player_id = .player_1 },
+        .end = .{ .index = 3, .player_id = .player_1 },
+    }, editor.selection);
 
     try editor.undo(&tai);
 
@@ -1347,6 +1367,10 @@ test "swapSides should should swap values between player 1 and player on selecte
         .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .forward = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 0, .player_id = .player_2 },
+        .end = .{ .index = 3, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.undo(&tai);
 
@@ -1356,6 +1380,10 @@ test "swapSides should should swap values between player 1 and player on selecte
         .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.redo(&tai);
 
@@ -1365,6 +1393,10 @@ test "swapSides should should swap values between player 1 and player on selecte
         .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .forward = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.redo(&tai);
 
@@ -1374,6 +1406,10 @@ test "swapSides should should swap values between player 1 and player on selecte
         .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
         .{ .player_1 = .{ .button_4 = true }, .player_2 = .{ .back = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 0, .player_id = .player_1 },
+        .end = .{ .index = 3, .player_id = .player_1 },
+    }, editor.selection);
 }
 
 test "setValues should set every cell the selection to the specified value" {
@@ -1401,6 +1437,10 @@ test "setValues should set every cell the selection to the specified value" {
         .{ .player_1 = .{ .rage = true }, .player_2 = .{ .rage = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    }, editor.selection);
 
     editor.selection = .{
         .start = .{ .index = 0, .player_id = .player_2 },
@@ -1415,6 +1455,10 @@ test "setValues should set every cell the selection to the specified value" {
         .{ .player_1 = .{ .rage = true }, .player_2 = .{ .heat = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .heat = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 0, .player_id = .player_2 },
+        .end = .{ .index = 3, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.undo(&tai);
 
@@ -1424,6 +1468,10 @@ test "setValues should set every cell the selection to the specified value" {
         .{ .player_1 = .{ .rage = true }, .player_2 = .{ .rage = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 0, .player_id = .player_2 },
+        .end = .{ .index = 3, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.undo(&tai);
 
@@ -1433,6 +1481,10 @@ test "setValues should set every cell the selection to the specified value" {
         .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.redo(&tai);
 
@@ -1442,6 +1494,10 @@ test "setValues should set every cell the selection to the specified value" {
         .{ .player_1 = .{ .rage = true }, .player_2 = .{ .rage = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    }, editor.selection);
 
     try editor.redo(&tai);
 
@@ -1451,6 +1507,10 @@ test "setValues should set every cell the selection to the specified value" {
         .{ .player_1 = .{ .rage = true }, .player_2 = .{ .heat = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .heat = true } },
     }, tai.sequence.items);
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 0, .player_id = .player_2 },
+        .end = .{ .index = 3, .player_id = .player_2 },
+    }, editor.selection);
 }
 
 test "copy should set clipboard text to the stringified version of the selection" {
@@ -1534,7 +1594,7 @@ test "paste should change the selection controlled part of sequence to match the
         .start = .{ .index = 0, .player_id = .player_2 },
         .end = .{ .index = 0, .player_id = .player_2 },
     };
-    editor.selection = try editor.paste("1\n2\t123\n3\n4", &tai);
+    try editor.paste("1\n2\t123\n3\n4", &tai);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1552,7 +1612,7 @@ test "paste should change the selection controlled part of sequence to match the
         .start = .{ .index = 1, .player_id = .player_2 },
         .end = .{ .index = 3, .player_id = .player_1 },
     };
-    editor.selection = try editor.paste("1\t2\n3\t4\n", &tai);
+    try editor.paste("1\t2\n3\t4\n", &tai);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1570,7 +1630,7 @@ test "paste should change the selection controlled part of sequence to match the
         .start = .{ .index = 3, .player_id = .player_1 },
         .end = .{ .index = 3, .player_id = .player_1 },
     };
-    editor.selection = try editor.paste("1\t2\n3\t4", &tai);
+    try editor.paste("1\t2\n3\t4", &tai);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1589,7 +1649,7 @@ test "paste should change the selection controlled part of sequence to match the
         .start = .{ .index = 4, .player_id = .player_2 },
         .end = .{ .index = 4, .player_id = .player_2 },
     };
-    editor.selection = try editor.paste("1\t2\n3\t4\n", &tai);
+    try editor.paste("1\t2\n3\t4\n", &tai);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1609,7 +1669,7 @@ test "paste should change the selection controlled part of sequence to match the
         .start = .{ .index = 6, .player_id = .player_1 },
         .end = .{ .index = 6, .player_id = .player_1 },
     };
-    editor.selection = try editor.paste("1234\n1234", &tai);
+    try editor.paste("1234\n1234", &tai);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
