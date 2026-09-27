@@ -121,7 +121,8 @@ pub const TaiEditor = struct {
         }
     }
 
-    pub fn deleteRows(self: *Self) !void {
+    pub fn deleteRows(self: *Self, sequence_len: usize) !void {
+        self.selection = self.selection.clampIndices(sequence_len);
         const min_index = self.selection.getMinIndex();
         const max_index = self.selection.getMaxIndex();
         var number_of_changes_added: usize = 0;
@@ -148,12 +149,16 @@ pub const TaiEditor = struct {
         self.selection.end.index = min_index;
     }
 
-    pub fn move(self: *Self, destination_min_index: usize) !void {
-        const columns: Change.Move.Columns = if (self.selection.start.player_id != self.selection.end.player_id) block: {
-            break :block .both;
-        } else switch (self.selection.start.player_id) {
-            .player_1 => .player_1,
-            .player_2 => .player_2,
+    pub fn move(self: *Self, destination_min_index: usize, sequence_len: usize) !void {
+        self.selection = self.selection.clampIndices(sequence_len);
+        const columns: Change.Move.Columns = block: {
+            if (self.selection.start.player_id != self.selection.end.player_id) {
+                break :block .both;
+            }
+            break :block switch (self.selection.start.player_id) {
+                .player_1 => .player_1,
+                .player_2 => .player_2,
+            };
         };
         const change = Change{ .move = .{
             .columns = columns,
@@ -175,7 +180,8 @@ pub const TaiEditor = struct {
         }
     }
 
-    pub fn swapSides(self: *Self) !void {
+    pub fn swapSides(self: *Self, sequence_len: usize) !void {
+        self.selection = self.selection.clampIndices(sequence_len);
         const change = Change{ .swap_sides = .{
             .index = self.selection.getMinIndex(),
             .number_of_rows = self.selection.getNumberOfRows(),
@@ -190,8 +196,9 @@ pub const TaiEditor = struct {
         }
     }
 
-    pub fn setValues(self: *Self, value: model.Input) !void {
+    pub fn setValues(self: *Self, value: model.Input, sequence_len: usize) !void {
         const selection = &self.selection;
+        selection.* = selection.clampIndices(sequence_len);
         const player_ids: []const model.PlayerId = switch (selection.start.player_id == selection.end.player_id) {
             true => &[1]model.PlayerId{selection.start.player_id},
             false => &[2]model.PlayerId{ .player_1, .player_2 },
@@ -228,15 +235,13 @@ pub const TaiEditor = struct {
     }
 
     pub fn copy(
-        self: *const Self,
+        self: *Self,
         setClipboardText: *const fn (text: [:0]const u8) void,
         tai: *const core.ToolAssistedInput,
     ) !void {
         const selection = &self.selection;
-        if (selection.getMaxIndex() >= tai.sequence.items.len) {
-            sdk.misc.error_context.new("Selection index range out of bounds.", .{});
-            return error.IndexOutOfBounds;
-        }
+        selection.* = selection.clampIndices(tai.sequence.items.len);
+
         const max_bytes_per_value = 20;
         const number_of_values = selection.getNumberOfCells();
         const buffer = self.allocator.alloc(u8, max_bytes_per_value * number_of_values) catch |err| {
@@ -284,10 +289,11 @@ pub const TaiEditor = struct {
             sdk.misc.error_context.new("Failed to write the 0 terminator at the end of the string.", .{});
             return err;
         };
+
         setClipboardText(buffer[0..(writer.end - 1) :0]);
     }
 
-    pub fn paste(self: *Self, text: [:0]const u8, tai: *const core.ToolAssistedInput) !void {
+    pub fn paste(self: *Self, text: [:0]const u8, sequence_len: usize) !void {
         const text_with_null: []const u8 = text[0..(text.len + 1)];
 
         var number_of_changes_added: usize = 0;
@@ -315,7 +321,7 @@ pub const TaiEditor = struct {
                 const value_text = text[value_start_text_index..current_text_index];
                 const value = model.Input.parse(value_text);
                 const change: Change = block: {
-                    if (current_row_index >= tai.sequence.items.len and player_id == starting_column) {
+                    if (current_row_index >= sequence_len and player_id == starting_column) {
                         break :block .{ .insert_row = .{
                             .index = current_row_index,
                             .new_values = switch (player_id) {
@@ -892,7 +898,7 @@ test "commit should not store changes when changes don't change the input sequen
         .start = .{ .index = 0, .player_id = .player_1 },
         .end = .{ .index = 1, .player_id = .player_2 },
     };
-    try editor.setValues(.{ .button_1 = true });
+    try editor.setValues(.{ .button_1 = true }, tai.sequence.items.len);
     try editor.commit(&tai);
     try testing.expectEqual(false, editor.canUndo());
 
@@ -900,7 +906,7 @@ test "commit should not store changes when changes don't change the input sequen
         .start = .{ .index = 2, .player_id = .player_2 },
         .end = .{ .index = 3, .player_id = .player_2 },
     };
-    try editor.move(3);
+    try editor.move(3, tai.sequence.items.len);
     try editor.commit(&tai);
     try testing.expectEqual(false, editor.canUndo());
 
@@ -908,7 +914,7 @@ test "commit should not store changes when changes don't change the input sequen
         .start = .{ .index = 3, .player_id = .player_1 },
         .end = .{ .index = 4, .player_id = .player_1 },
     };
-    try editor.swapSides();
+    try editor.swapSides(tai.sequence.items.len);
     try editor.commit(&tai);
     try testing.expectEqual(false, editor.canUndo());
 }
@@ -929,7 +935,7 @@ test "commit should revert changes and return error when operating out of bounds
         .start = .{ .index = 1, .player_id = .player_1 },
         .end = .{ .index = 4, .player_id = .player_2 },
     };
-    try editor.setValues(.{});
+    try editor.setValues(.{}, 5);
     try testing.expectError(error.IndexOutOfBounds, editor.commit(&tai));
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1137,7 +1143,7 @@ test "deleteRows should delete rows at selected indices" {
         .start = .{ .index = 1, .player_id = .player_1 },
         .end = .{ .index = 2, .player_id = .player_2 },
     };
-    try editor.deleteRows();
+    try editor.deleteRows(tai.sequence.items.len);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1151,9 +1157,9 @@ test "deleteRows should delete rows at selected indices" {
 
     editor.selection = .{
         .start = .{ .index = 1, .player_id = .player_1 },
-        .end = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 2, .player_id = .player_1 },
     };
-    try editor.deleteRows();
+    try editor.deleteRows(tai.sequence.items.len);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1210,7 +1216,7 @@ test "deleteRows should delete rows at selected indices" {
     }, editor.selection);
 }
 
-test "move should move selected rows to specified destination index" {
+test "move should move selected values to specified destination index" {
     var editor = TaiEditor.init(testing.allocator);
     defer editor.deinit();
     var tai = core.ToolAssistedInput.init(testing.allocator);
@@ -1226,7 +1232,7 @@ test "move should move selected rows to specified destination index" {
         .start = .{ .index = 1, .player_id = .player_1 },
         .end = .{ .index = 1, .player_id = .player_2 },
     };
-    try editor.move(3);
+    try editor.move(3, tai.sequence.items.len);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1242,9 +1248,9 @@ test "move should move selected rows to specified destination index" {
 
     editor.selection = .{
         .start = .{ .index = 2, .player_id = .player_2 },
-        .end = .{ .index = 3, .player_id = .player_2 },
+        .end = .{ .index = 4, .player_id = .player_2 },
     };
-    try editor.move(0);
+    try editor.move(0, tai.sequence.items.len);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1327,7 +1333,7 @@ test "swapSides should should swap values between player 1 and player 2 on selec
         .start = .{ .index = 1, .player_id = .player_1 },
         .end = .{ .index = 2, .player_id = .player_2 },
     };
-    try editor.swapSides();
+    try editor.swapSides(tai.sequence.items.len);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1343,9 +1349,9 @@ test "swapSides should should swap values between player 1 and player 2 on selec
 
     editor.selection = .{
         .start = .{ .index = 0, .player_id = .player_2 },
-        .end = .{ .index = 3, .player_id = .player_2 },
+        .end = .{ .index = 4, .player_id = .player_2 },
     };
-    try editor.swapSides();
+    try editor.swapSides(tai.sequence.items.len);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1428,7 +1434,7 @@ test "setValues should set every cell the selection to the specified value" {
         .start = .{ .index = 1, .player_id = .player_1 },
         .end = .{ .index = 2, .player_id = .player_2 },
     };
-    try editor.setValues(.{ .rage = true });
+    try editor.setValues(.{ .rage = true }, tai.sequence.items.len);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1444,9 +1450,9 @@ test "setValues should set every cell the selection to the specified value" {
 
     editor.selection = .{
         .start = .{ .index = 0, .player_id = .player_2 },
-        .end = .{ .index = 3, .player_id = .player_2 },
+        .end = .{ .index = 4, .player_id = .player_2 },
     };
-    try editor.setValues(.{ .heat = true });
+    try editor.setValues(.{ .heat = true }, tai.sequence.items.len);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1545,7 +1551,7 @@ test "copy should set clipboard text to the stringified version of the selection
 
     editor.selection = .{
         .start = .{ .index = 0, .player_id = .player_1 },
-        .end = .{ .index = 3, .player_id = .player_2 },
+        .end = .{ .index = 4, .player_id = .player_2 },
     };
     try editor.copy(Clipboard.setText, &tai);
     try testing.expect(Clipboard.data != null);
@@ -1594,7 +1600,7 @@ test "paste should change the selection controlled part of sequence to match the
         .start = .{ .index = 0, .player_id = .player_2 },
         .end = .{ .index = 0, .player_id = .player_2 },
     };
-    try editor.paste("1\n2\t123\n3\n4", &tai);
+    try editor.paste("1\n2\t123\n3\n4", tai.sequence.items.len);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1612,7 +1618,7 @@ test "paste should change the selection controlled part of sequence to match the
         .start = .{ .index = 1, .player_id = .player_2 },
         .end = .{ .index = 3, .player_id = .player_1 },
     };
-    try editor.paste("1\t2\n3\t4\n", &tai);
+    try editor.paste("1\t2\n3\t4\n", tai.sequence.items.len);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1630,7 +1636,7 @@ test "paste should change the selection controlled part of sequence to match the
         .start = .{ .index = 3, .player_id = .player_1 },
         .end = .{ .index = 3, .player_id = .player_1 },
     };
-    try editor.paste("1\t2\n3\t4", &tai);
+    try editor.paste("1\t2\n3\t4", tai.sequence.items.len);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1649,7 +1655,7 @@ test "paste should change the selection controlled part of sequence to match the
         .start = .{ .index = 4, .player_id = .player_2 },
         .end = .{ .index = 4, .player_id = .player_2 },
     };
-    try editor.paste("1\t2\n3\t4\n", &tai);
+    try editor.paste("1\t2\n3\t4\n", tai.sequence.items.len);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
@@ -1669,7 +1675,7 @@ test "paste should change the selection controlled part of sequence to match the
         .start = .{ .index = 6, .player_id = .player_1 },
         .end = .{ .index = 6, .player_id = .player_1 },
     };
-    try editor.paste("1234\n1234", &tai);
+    try editor.paste("1234\n1234", tai.sequence.items.len);
     try editor.commit(&tai);
 
     try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
