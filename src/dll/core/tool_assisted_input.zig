@@ -8,6 +8,7 @@ pub const ToolAssistedInput = struct {
     allocator: std.mem.Allocator,
     sequence: Sequence,
     mode: Mode,
+    play_config: PlayConfig,
 
     const Self = @This();
     pub const Sequence = std.ArrayList(SequenceItem);
@@ -17,14 +18,11 @@ pub const ToolAssistedInput = struct {
     };
     pub const Mode = union(enum) {
         idle: void,
-        play: PlayMode,
-    };
-    pub const PlayMode = struct {
-        current_index: usize,
-        end_index: usize,
-        enable_player_1: bool,
-        enable_player_2: bool,
-        repeat: bool,
+        play: Play,
+
+        pub const Play = struct {
+            current_index: usize,
+        };
     };
     pub const PlayConfig = struct {
         start_index: usize = 0,
@@ -39,6 +37,7 @@ pub const ToolAssistedInput = struct {
             .allocator = allocator,
             .sequence = .empty,
             .mode = .idle,
+            .play_config = .{},
         };
     }
 
@@ -53,27 +52,31 @@ pub const ToolAssistedInput = struct {
                 input_override.player_2 = null;
             },
             .play => |*mode| {
-                const end_index = @min(mode.end_index, self.sequence.items.len);
+                const config = &self.play_config;
+                const end_index = @min(config.start_index +| config.length, self.sequence.items.len);
                 if (mode.current_index >= end_index) {
-                    switch (mode.repeat) {
-                        false => self.mode = .idle,
-                        true => mode.current_index = 0,
+                    if (config.repeat) {
+                        mode.current_index = config.start_index;
+                    } else {
+                        self.mode = .idle;
+                        input_override.player_1 = null;
+                        input_override.player_2 = null;
+                        return;
                     }
-                    return;
                 }
                 const previous_input = switch (mode.current_index) {
                     0 => SequenceItem{},
                     else => self.sequence.items[mode.current_index - 1],
                 };
                 const current_input = self.sequence.items[mode.current_index];
-                input_override.player_1 = switch (mode.enable_player_1) {
+                input_override.player_1 = switch (config.enable_player_1) {
                     true => .{
                         .previous_input = previous_input.player_1,
                         .current_input = current_input.player_1,
                     },
                     false => null,
                 };
-                input_override.player_2 = switch (mode.enable_player_2) {
+                input_override.player_2 = switch (config.enable_player_2) {
                     true => .{
                         .previous_input = previous_input.player_2,
                         .current_input = current_input.player_2,
@@ -81,27 +84,15 @@ pub const ToolAssistedInput = struct {
                     false => null,
                 };
                 mode.current_index += 1;
-                if (mode.current_index >= end_index) {
-                    switch (mode.repeat) {
-                        false => self.mode = .idle,
-                        true => mode.current_index = 0,
-                    }
-                }
             },
         }
     }
 
-    pub fn play(self: *Self, config: *const PlayConfig) void {
+    pub fn play(self: *Self) void {
         if (self.sequence.items.len == 0) {
             return;
         }
-        self.mode = .{ .play = .{
-            .current_index = config.start_index,
-            .end_index = @min(config.start_index +| config.length, self.sequence.items.len),
-            .enable_player_1 = config.enable_player_1,
-            .enable_player_2 = config.enable_player_2,
-            .repeat = config.repeat,
-        } };
+        self.mode = .{ .play = .{ .current_index = self.play_config.start_index } };
     }
 
     pub fn stop(self: *Self) void {
@@ -135,7 +126,7 @@ test "should override input with input sequence when put in play mode" {
         .player_2 = .{ .button_4 = true },
     });
 
-    input.play(&.{});
+    input.play();
 
     input.processFrame(&input_override);
     try testing.expect(input_override.player_1 != null);
@@ -172,7 +163,7 @@ test "should stop overriding input when play mode is stopped" {
         .player_2 = .{ .button_4 = true },
     });
 
-    input.play(&.{});
+    input.play();
 
     input.processFrame(&input_override);
     try testing.expect(input_override.player_1 != null);
@@ -211,7 +202,9 @@ test "should override input with part of sequence when start index and length ar
         .player_2 = .{ .right = true },
     });
 
-    input.play(&.{ .start_index = 1, .length = 2 });
+    input.play_config.start_index = 1;
+    input.play_config.length = 2;
+    input.play();
 
     input.processFrame(&input_override);
     try testing.expect(input_override.player_1 != null);
@@ -252,7 +245,9 @@ test "should should override input only for enabled players when enable player v
     try testing.expectEqual(null, input_override.player_1);
     try testing.expectEqual(null, input_override.player_2);
 
-    input.play(&.{ .enable_player_1 = true, .enable_player_2 = false });
+    input.play_config.enable_player_1 = true;
+    input.play_config.enable_player_2 = false;
+    input.play();
 
     input.processFrame(&input_override);
     try testing.expect(input_override.player_1 != null);
@@ -270,7 +265,9 @@ test "should should override input only for enabled players when enable player v
     try testing.expectEqual(null, input_override.player_1);
     try testing.expectEqual(null, input_override.player_2);
 
-    input.play(&.{ .enable_player_1 = false, .enable_player_2 = true });
+    input.play_config.enable_player_1 = false;
+    input.play_config.enable_player_2 = true;
+    input.play();
 
     input.processFrame(&input_override);
     try testing.expectEqual(null, input_override.player_1);
@@ -303,7 +300,8 @@ test "should repeat the input sequence until stopped when repeat is set to true"
         .player_2 = .{ .button_4 = true },
     });
 
-    input.play(&.{ .repeat = true });
+    input.play_config.repeat = true;
+    input.play();
 
     input.processFrame(&input_override);
     try testing.expect(input_override.player_1 != null);
