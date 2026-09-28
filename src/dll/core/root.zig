@@ -5,6 +5,7 @@ pub const Core = @import("core.zig").Core;
 pub const HitDetector = @import("hit_detector.zig").HitDetector;
 pub const MoveMeasurer = @import("move_measurer.zig").MoveMeasurer;
 pub const MoveDetector = @import("move_detector.zig").MoveDetector;
+pub const TaiRecordingCoordinator = @import("tai_recording_coordinator.zig").TaiRecordingCoordinator;
 pub const ThrowEscapeDetectorConfig = @import("throw_escape_detector.zig").ThrowEscapeDetectorConfig;
 pub const ThrowEscapeDetector = @import("throw_escape_detector.zig").ThrowEscapeDetector;
 pub const ToolAssistedInput = @import("tool_assisted_input.zig").ToolAssistedInput;

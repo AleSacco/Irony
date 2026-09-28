@@ -20,6 +20,7 @@ pub const Core = struct {
     automation: core.Automation(.{}),
     tool_assisted_input: core.ToolAssistedInput,
     controller: core.Controller,
+    tai_recording_coordinator: core.TaiRecordingCoordinator,
 
     const Self = @This();
 
@@ -34,6 +35,7 @@ pub const Core = struct {
             .automation = .{},
             .tool_assisted_input = core.ToolAssistedInput.init(allocator),
             .controller = core.Controller.init(allocator),
+            .tai_recording_coordinator = .{},
         };
     }
 
@@ -62,6 +64,7 @@ pub const Core = struct {
         self.automation.processFrame(base_dir, &settings.automation, &self.controller, &frame);
         self.tool_assisted_input.processFrame(input_override);
         self.controller.processFrame(&frame, context, processFrame);
+        self.tai_recording_coordinator.processFrame(&self.tool_assisted_input, &self.controller);
     }
 
     pub fn update(

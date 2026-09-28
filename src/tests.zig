@@ -86,6 +86,7 @@ test {
     _ = @import("dll/core/hit_detector.zig");
     _ = @import("dll/core/move_detector.zig");
     _ = @import("dll/core/move_measurer.zig");
+    _ = @import("dll/core/tai_recording_coordinator.zig");
     _ = @import("dll/core/throw_escape_detector.zig");
     _ = @import("dll/core/tool_assisted_input.zig");
 
