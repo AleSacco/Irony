@@ -58,6 +58,7 @@ pub const Ui = struct {
         game_memory_maybe: ?*const game.Memory(build_info.game),
         controller: *core.Controller,
         tai: *core.ToolAssistedInput,
+        tai_coordinator: *core.TaiRecordingCoordinator,
         latest_version: ui.LatestVersion,
         memory_usage: usize,
     ) void {
@@ -94,6 +95,7 @@ pub const Ui = struct {
         self.handleFirstDraw();
         self.handleOpenKey();
         self.main_window.handleKeybinds(controller);
+        ui.TaiWindow.handleKeybinds(tai);
 
         if (!self.is_open) {
             return;
@@ -110,7 +112,7 @@ pub const Ui = struct {
             latest_version,
             memory_usage,
         );
-        self.tai_window.draw(controller, tai);
+        self.tai_window.draw(controller, tai, tai_coordinator);
         self.settings_window.draw(base_dir, settings);
         self.logs_window.draw(dll.buffer_logger);
         self.game_memory_window.draw(build_info.game, game_memory);

@@ -10,6 +10,7 @@ pub const TaiTable = struct {
     state: State,
     previous_selection: ui.TaiEditor.Selection,
     previous_frame_index: ?usize,
+    previous_tai_mode: TaiMode,
     previous_hovered_index: ?usize,
     frame_index_before_hover: ?usize,
     scroll_area_visible_height: f32,
@@ -43,12 +44,17 @@ pub const TaiTable = struct {
         scroll_area_visible_height: f32,
         player_divide_screen_x: f32,
     };
+    const TaiMode = enum {
+        idle,
+        play,
+    };
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .editor = .init(allocator),
             .state = .idle,
             .previous_selection = .initial,
+            .previous_tai_mode = .idle,
             .previous_frame_index = null,
             .previous_hovered_index = null,
             .frame_index_before_hover = null,
@@ -92,21 +98,23 @@ pub const TaiTable = struct {
 
         const frame_start_selection = self.editor.selection;
 
-        if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows)) {
+        if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_ChildWindows)) {
             self.handleKeyboardSelect(tai.sequence.items.len);
             self.handleSelectAllShortcut(tai.sequence.items.len);
             self.handleClearValuesShortcut(tai.sequence.items.len);
             self.handleEditShortcut(tai);
             self.handleConfirmEditShortcut(tai.sequence.items.len);
-            self.handleEnabledShortcut(enable_player_1, .player_1);
-            self.handleEnabledShortcut(enable_player_2, .player_2);
+            self.handleMoveShortcut(tai.sequence.items.len);
+            self.handleSwapShortcut(tai.sequence.items.len);
+        }
+        if (imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_RootAndChildWindows)) {
+            handleEnabledShortcut(enable_player_1, .player_1);
+            handleEnabledShortcut(enable_player_2, .player_2);
             self.handleCancelShortcut();
             self.handleUndoShortcut(tai);
             self.handleRedoShortcut(tai);
             self.handleImportShortcut(tai, controller);
             self.handleClearShortcut(tai);
-            self.handleMoveShortcut(tai.sequence.items.len);
-            self.handleSwapShortcut(tai.sequence.items.len);
             self.handleInsertShortcut();
             self.handleDeleteShortcut(tai.sequence.items.len);
             self.handleCopyShortcut(tai);
@@ -279,18 +287,23 @@ pub const TaiTable = struct {
             self.editor.discardUncommitted();
         };
 
-        self.syncWithController(controller, tai.sequence.items.len);
+        self.syncWithController(controller, tai);
         self.keepSelectionVisible(&clipper, &dimensions);
         self.handleEdgeScrolling(&dimensions);
     }
 
-    fn syncWithController(self: *Self, controller: *core.Controller, sequence_len: usize) void {
+    fn syncWithController(self: *Self, controller: *core.Controller, tai: *const core.ToolAssistedInput) void {
         const current_hovered_index: ?usize = if (imgui.igTableGetHoveredRow() > 0) block: {
             break :block @intCast(imgui.igTableGetHoveredRow() - 1);
         } else null;
         defer self.previous_hovered_index = current_hovered_index;
+        const tai_mode: TaiMode = switch (tai.mode) {
+            .idle => .idle,
+            .play => .play,
+        };
+        defer self.previous_tai_mode = tai_mode;
 
-        if (controller.mode != .pause) {
+        if (controller.mode != .pause or tai_mode != .idle or self.previous_tai_mode != .idle) {
             return;
         }
 
@@ -298,7 +311,7 @@ pub const TaiTable = struct {
         const current_selection = self.editor.selection;
         if (current_frame_index != self.previous_frame_index) {
             if (current_frame_index) |index| {
-                if (index < sequence_len) {
+                if (index < tai.sequence.items.len) {
                     self.editor.selection = .{
                         .start = .{ .index = index, .player_id = .player_1 },
                         .end = .{ .index = index, .player_id = .player_2 },
@@ -307,7 +320,7 @@ pub const TaiTable = struct {
             }
         } else if (!std.meta.eql(current_selection, self.previous_selection)) {
             const index = current_selection.end.index;
-            if (index < controller.getTotalFrames() and index < sequence_len) {
+            if (index < controller.getTotalFrames() and index < tai.sequence.items.len) {
                 controller.setCurrentFrameIndex(index);
                 self.frame_index_before_hover = controller.getCurrentFrameIndex();
             }
@@ -316,7 +329,7 @@ pub const TaiTable = struct {
         if (current_hovered_index) |index| {
             const mouse_moved = !std.meta.eql(imgui.igGetIO_Nil().*.MouseDelta, imgui.ImVec2{ .x = 0, .y = 0 });
             const scroll_moved = imgui.igGetIO_Nil().*.MouseWheel != 0;
-            if ((mouse_moved or scroll_moved) and index < controller.getTotalFrames() and index < sequence_len) {
+            if ((mouse_moved or scroll_moved) and index < controller.getTotalFrames() and index < tai.sequence.items.len) {
                 controller.setCurrentFrameIndex(index);
             }
         } else {
@@ -955,10 +968,7 @@ pub const TaiTable = struct {
         }
     }
 
-    fn handleEnabledShortcut(self: *const Self, enabled: *bool, player_id: model.PlayerId) void {
-        if (self.state != .idle) {
-            return;
-        }
+    fn handleEnabledShortcut(enabled: *bool, player_id: model.PlayerId) void {
         if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Ctrl) {
             return;
         }

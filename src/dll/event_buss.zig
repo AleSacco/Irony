@@ -234,6 +234,7 @@ pub const EventBuss = struct {
             game_memory_maybe,
             &self.core.controller,
             &self.core.tool_assisted_input,
+            &self.core.tai_recording_coordinator,
             latest_version,
             memory_usage,
         );

@@ -29,8 +29,6 @@ pub fn Controls(comptime config: ControlsConfig) type {
             handleNextFrameKey(controller);
             self.handleFastForwardKey(controller);
             self.handleClearKey(controller);
-            handleDecreaseSpeedKey(controller);
-            handleIncreaseSpeedKey(controller);
         }
 
         pub fn draw(self: *Self, controller: *config.Controller) void {
@@ -528,7 +526,7 @@ pub fn Controls(comptime config: ControlsConfig) type {
                 imgui.igOpenPopup_Str("speed_popup", 0);
             }
             if (imgui.igIsItemHovered(0)) {
-                imgui.igSetTooltip("Playback Speed [F10 and F11]");
+                imgui.igSetTooltip("Playback Speed");
             }
             if (imgui.igBeginPopup("speed_popup", 0)) {
                 defer imgui.igEndPopup();
@@ -540,20 +538,6 @@ pub fn Controls(comptime config: ControlsConfig) type {
                     }
                 }
             }
-        }
-
-        fn handleDecreaseSpeedKey(controller: *config.Controller) void {
-            if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_F10, true)) {
-                return;
-            }
-            controller.playback_speed = @max(controller.playback_speed - 0.1, 0.1);
-        }
-
-        fn handleIncreaseSpeedKey(controller: *config.Controller) void {
-            if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_F11, true)) {
-                return;
-            }
-            controller.playback_speed = @min(controller.playback_speed + 0.1, 4.0);
         }
     };
 }
@@ -1588,54 +1572,6 @@ test "should disable all buttons/keys except rewind and fast forward while scrub
             try testing.expectEqual(0, controller.clear_call_count);
             ctx.keyPress(imgui.ImGuiKey_F9, 1);
             try testing.expectEqual(0, controller.clear_call_count);
-        }
-    };
-    const context = try sdk.ui.getTestingContext();
-    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
-}
-
-test "should change playback speed when speed UI and F10,F11 keys are used" {
-    const Test = struct {
-        var controller = MockController{ .mode = .playback };
-        var controls = Controls(.{ .Controller = MockController }){};
-
-        fn guiFunction(_: sdk.ui.TestContext) !void {
-            _ = imgui.igBegin("Window", null, 0);
-            defer imgui.igEnd();
-            controls.handleKeybinds(&controller);
-            controls.draw(&controller);
-        }
-
-        fn testFunction(ctx: sdk.ui.TestContext) !void {
-            ctx.setRef("Window");
-            ctx.itemClick("###speed", 0, 0);
-            ctx.setRef("//$FOCUSED");
-            ctx.itemClick("0.50x", 0, 0);
-            try testing.expectEqual(0.5, controller.playback_speed);
-
-            ctx.setRef("Window");
-            ctx.itemClick("###speed", 0, 0);
-            ctx.setRef("//$FOCUSED");
-            ctx.itemClick("2.00x", 0, 0);
-            try testing.expectEqual(2.0, controller.playback_speed);
-
-            ctx.setRef("Window");
-            ctx.itemClick("###speed", 0, 0);
-            ctx.setRef("//$FOCUSED");
-            ctx.itemInputValueFloat("###speed_slider", 1.23);
-            try testing.expectEqual(1.23, controller.playback_speed);
-
-            ctx.keyPress(imgui.ImGuiKey_F10, 1);
-            try testing.expectEqual(1.13, controller.playback_speed);
-
-            ctx.keyPress(imgui.ImGuiKey_F11, 1);
-            try testing.expectEqual(1.23, controller.playback_speed);
-
-            ctx.keyPress(imgui.ImGuiKey_F10, 100);
-            try testing.expectEqual(0.1, controller.playback_speed);
-
-            ctx.keyPress(imgui.ImGuiKey_F11, 100);
-            try testing.expectEqual(4.0, controller.playback_speed);
         }
     };
     const context = try sdk.ui.getTestingContext();

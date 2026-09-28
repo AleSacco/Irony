@@ -7,8 +7,8 @@ const ui = @import("root.zig");
 pub const TaiWindow = struct {
     is_open: bool,
     table: ui.TaiTable,
-    enable_player_1: bool,
-    enable_player_2: bool,
+    controls: ui.TaiControls,
+    controls_height: f32 = 0,
 
     const Self = @This();
 
@@ -18,8 +18,7 @@ pub const TaiWindow = struct {
         return .{
             .is_open = false,
             .table = .init(allocator),
-            .enable_player_1 = true,
-            .enable_player_2 = true,
+            .controls = .{},
         };
     }
 
@@ -27,7 +26,16 @@ pub const TaiWindow = struct {
         self.table.deinit();
     }
 
-    pub fn draw(self: *Self, controller: *core.Controller, tai: *core.ToolAssistedInput) void {
+    pub fn handleKeybinds(tai: *core.ToolAssistedInput) void {
+        ui.TaiControls.handleKeybinds(tai);
+    }
+
+    pub fn draw(
+        self: *Self,
+        controller: *core.Controller,
+        tai: *core.ToolAssistedInput,
+        coordinator: *core.TaiRecordingCoordinator,
+    ) void {
         if (!self.is_open) {
             return;
         }
@@ -37,8 +45,18 @@ pub const TaiWindow = struct {
             return;
         }
 
-        if (imgui.igBeginChild_Str("table", .{}, 0, imgui.ImGuiWindowFlags_NoMove)) {
-            self.table.draw(tai, controller, &self.enable_player_1, &self.enable_player_2);
+        var available_size: imgui.ImVec2 = undefined;
+        imgui.igGetContentRegionAvail(&available_size);
+        const table_height = available_size.y - self.controls_height;
+
+        if (imgui.igBeginChild_Str("table", .{ .y = table_height }, 0, imgui.ImGuiWindowFlags_NoMove)) {
+            self.table.draw(tai, controller, &self.controls.enable_player_1, &self.controls.enable_player_2);
+        }
+        imgui.igEndChild();
+        if (imgui.igBeginChild_Str("controls", .{}, 0, 0)) {
+            const start_y = imgui.igGetCursorPosY();
+            self.controls.draw(tai, coordinator, &self.table.editor.selection);
+            self.controls_height = imgui.igGetCursorPosY() - start_y;
         }
         imgui.igEndChild();
     }
