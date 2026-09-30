@@ -36,6 +36,14 @@ pub const TaiWindow = struct {
         tai: *core.ToolAssistedInput,
         coordinator: *core.TaiRecordingCoordinator,
     ) void {
+        const display_size = imgui.igGetIO_Nil().*.DisplaySize;
+        imgui.igSetNextWindowPos(
+            .{ .x = 0.5 * display_size.x, .y = 0.5 * display_size.y },
+            imgui.ImGuiCond_FirstUseEver,
+            .{ .x = 0.5, .y = 0.5 },
+        );
+        imgui.igSetNextWindowSize(.{ .x = 520, .y = 640 }, imgui.ImGuiCond_FirstUseEver);
+
         if (!self.is_open) {
             return;
         }
