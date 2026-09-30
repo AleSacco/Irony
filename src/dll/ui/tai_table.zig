@@ -669,20 +669,30 @@ pub const TaiTable = struct {
             return;
         }
 
+        const selection = &self.editor.selection;
         var next_cell = self.editor.selection.end;
         if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Enter, true)) {
             const mods = imgui.igGetIO_Nil().*.KeyMods;
             if (mods == 0) {
+                if (selection.start.index == sequence_len and selection.end.index == sequence_len) {
+                    self.editor.insertRows() catch |err| {
+                        sdk.misc.error_context.append("Failed to insert row.", .{});
+                        sdk.misc.error_context.logError(err);
+                    };
+                    next_cell.index += 1;
+                    selection.* = .{ .start = next_cell, .end = next_cell };
+                    return;
+                }
                 if (next_cell.index < sequence_len) {
                     next_cell.index += 1;
                 }
-                self.editor.selection = .{ .start = next_cell, .end = next_cell };
+                selection.* = .{ .start = next_cell, .end = next_cell };
                 return;
             } else if (mods == imgui.ImGuiMod_Shift) {
                 if (next_cell.index > 0) {
                     next_cell.index -= 1;
                 }
-                self.editor.selection = .{ .start = next_cell, .end = next_cell };
+                selection.* = .{ .start = next_cell, .end = next_cell };
                 return;
             }
         }
@@ -715,9 +725,9 @@ pub const TaiTable = struct {
         if (detected_press) {
             const mods = imgui.igGetIO_Nil().*.KeyMods;
             if (mods == 0) {
-                self.editor.selection = .{ .start = next_cell, .end = next_cell };
+                selection.* = .{ .start = next_cell, .end = next_cell };
             } else if (mods == imgui.ImGuiMod_Shift) {
-                self.editor.selection.end = next_cell;
+                selection.end = next_cell;
             }
         }
     }
