@@ -45,7 +45,22 @@ pub const ToolAssistedInput = struct {
         self.sequence.deinit(self.allocator);
     }
 
-    pub fn processFrame(self: *Self, input_override: *game.InputOverride) void {
+    pub fn processFrame(self: *Self, input_override: *game.InputOverride, source_maybe: ?model.Source) void {
+        const source = source_maybe orelse {
+            input_override.player_1 = null;
+            input_override.player_2 = null;
+            self.mode = .idle;
+            return;
+        };
+        switch (source) {
+            .practice, .replay_playback => {},
+            .live_game, .replay_loading => {
+                input_override.player_1 = null;
+                input_override.player_2 = null;
+                self.mode = .idle;
+                return;
+            },
+        }
         switch (self.mode) {
             .idle => {
                 input_override.player_1 = null;
@@ -107,12 +122,12 @@ test "should not override inputs when idle" {
     var input = ToolAssistedInput.init(testing.allocator);
     defer input.deinit();
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expectEqual(null, input_override.player_1);
     try testing.expectEqual(null, input_override.player_2);
 }
 
-test "should override input with input sequence when put in play mode" {
+test "should override inputs with input sequence when put in play mode" {
     var input_override = game.InputOverride{};
     var input = ToolAssistedInput.init(testing.allocator);
     defer input.deinit();
@@ -128,7 +143,7 @@ test "should override input with input sequence when put in play mode" {
 
     input.play();
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expect(input_override.player_1 != null);
     try testing.expect(input_override.player_2 != null);
     try testing.expectEqual(model.Input{}, input_override.player_1.?.previous_input);
@@ -136,7 +151,7 @@ test "should override input with input sequence when put in play mode" {
     try testing.expectEqual(model.Input{ .button_1 = true }, input_override.player_1.?.current_input);
     try testing.expectEqual(model.Input{ .button_2 = true }, input_override.player_2.?.current_input);
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expect(input_override.player_1 != null);
     try testing.expect(input_override.player_2 != null);
     try testing.expectEqual(model.Input{ .button_1 = true }, input_override.player_1.?.previous_input);
@@ -144,12 +159,42 @@ test "should override input with input sequence when put in play mode" {
     try testing.expectEqual(model.Input{ .button_3 = true }, input_override.player_1.?.current_input);
     try testing.expectEqual(model.Input{ .button_4 = true }, input_override.player_2.?.current_input);
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expectEqual(null, input_override.player_1);
     try testing.expectEqual(null, input_override.player_2);
 }
 
-test "should stop overriding input when play mode is stopped" {
+test "should not override inputs when frame is captured from a disallowed source" {
+    var input_override = game.InputOverride{};
+    var input = ToolAssistedInput.init(testing.allocator);
+    defer input.deinit();
+
+    try input.sequence.append(input.allocator, .{
+        .player_1 = .{ .button_1 = true },
+        .player_2 = .{ .button_2 = true },
+    });
+    try input.sequence.append(input.allocator, .{
+        .player_1 = .{ .button_3 = true },
+        .player_2 = .{ .button_4 = true },
+    });
+
+    input.play();
+    input.processFrame(&input_override, null);
+    try testing.expectEqual(null, input_override.player_1);
+    try testing.expectEqual(null, input_override.player_2);
+
+    input.play();
+    input.processFrame(&input_override, .live_game);
+    try testing.expectEqual(null, input_override.player_1);
+    try testing.expectEqual(null, input_override.player_2);
+
+    input.play();
+    input.processFrame(&input_override, .replay_loading);
+    try testing.expectEqual(null, input_override.player_1);
+    try testing.expectEqual(null, input_override.player_2);
+}
+
+test "should stop overriding inputs when play mode is stopped" {
     var input_override = game.InputOverride{};
     var input = ToolAssistedInput.init(testing.allocator);
     defer input.deinit();
@@ -165,7 +210,7 @@ test "should stop overriding input when play mode is stopped" {
 
     input.play();
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expect(input_override.player_1 != null);
     try testing.expect(input_override.player_2 != null);
     try testing.expectEqual(model.Input{}, input_override.player_1.?.previous_input);
@@ -175,12 +220,12 @@ test "should stop overriding input when play mode is stopped" {
 
     input.stop();
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expectEqual(null, input_override.player_1);
     try testing.expectEqual(null, input_override.player_2);
 }
 
-test "should override input with part of sequence when start index and length are used" {
+test "should override inputs with part of sequence when start index and length are used" {
     var input_override = game.InputOverride{};
     var input = ToolAssistedInput.init(testing.allocator);
     defer input.deinit();
@@ -206,7 +251,7 @@ test "should override input with part of sequence when start index and length ar
     input.play_config.length = 2;
     input.play();
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expect(input_override.player_1 != null);
     try testing.expect(input_override.player_2 != null);
     try testing.expectEqual(model.Input{ .button_1 = true }, input_override.player_1.?.previous_input);
@@ -214,7 +259,7 @@ test "should override input with part of sequence when start index and length ar
     try testing.expectEqual(model.Input{ .button_3 = true }, input_override.player_1.?.current_input);
     try testing.expectEqual(model.Input{ .button_4 = true }, input_override.player_2.?.current_input);
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expect(input_override.player_1 != null);
     try testing.expect(input_override.player_2 != null);
     try testing.expectEqual(model.Input{ .button_3 = true }, input_override.player_1.?.previous_input);
@@ -222,12 +267,12 @@ test "should override input with part of sequence when start index and length ar
     try testing.expectEqual(model.Input{ .up = true }, input_override.player_1.?.current_input);
     try testing.expectEqual(model.Input{ .down = true }, input_override.player_2.?.current_input);
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expectEqual(null, input_override.player_1);
     try testing.expectEqual(null, input_override.player_2);
 }
 
-test "should should override input only for enabled players when enable player values are used" {
+test "should should override inputs only for enabled players when enable player values are used" {
     var input_override = game.InputOverride{};
     var input = ToolAssistedInput.init(testing.allocator);
     defer input.deinit();
@@ -241,7 +286,7 @@ test "should should override input only for enabled players when enable player v
         .player_2 = .{ .button_4 = true },
     });
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expectEqual(null, input_override.player_1);
     try testing.expectEqual(null, input_override.player_2);
 
@@ -249,19 +294,19 @@ test "should should override input only for enabled players when enable player v
     input.play_config.enable_player_2 = false;
     input.play();
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expect(input_override.player_1 != null);
     try testing.expectEqual(null, input_override.player_2);
     try testing.expectEqual(model.Input{}, input_override.player_1.?.previous_input);
     try testing.expectEqual(model.Input{ .button_1 = true }, input_override.player_1.?.current_input);
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expect(input_override.player_1 != null);
     try testing.expectEqual(null, input_override.player_2);
     try testing.expectEqual(model.Input{ .button_1 = true }, input_override.player_1.?.previous_input);
     try testing.expectEqual(model.Input{ .button_3 = true }, input_override.player_1.?.current_input);
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expectEqual(null, input_override.player_1);
     try testing.expectEqual(null, input_override.player_2);
 
@@ -269,19 +314,19 @@ test "should should override input only for enabled players when enable player v
     input.play_config.enable_player_2 = true;
     input.play();
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expectEqual(null, input_override.player_1);
     try testing.expect(input_override.player_2 != null);
     try testing.expectEqual(model.Input{}, input_override.player_2.?.previous_input);
     try testing.expectEqual(model.Input{ .button_2 = true }, input_override.player_2.?.current_input);
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expectEqual(null, input_override.player_1);
     try testing.expect(input_override.player_2 != null);
     try testing.expectEqual(model.Input{ .button_2 = true }, input_override.player_2.?.previous_input);
     try testing.expectEqual(model.Input{ .button_4 = true }, input_override.player_2.?.current_input);
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expectEqual(null, input_override.player_1);
     try testing.expectEqual(null, input_override.player_2);
 }
@@ -303,7 +348,7 @@ test "should repeat the input sequence until stopped when repeat is set to true"
     input.play_config.repeat = true;
     input.play();
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expect(input_override.player_1 != null);
     try testing.expect(input_override.player_2 != null);
     try testing.expectEqual(model.Input{}, input_override.player_1.?.previous_input);
@@ -311,7 +356,7 @@ test "should repeat the input sequence until stopped when repeat is set to true"
     try testing.expectEqual(model.Input{ .button_1 = true }, input_override.player_1.?.current_input);
     try testing.expectEqual(model.Input{ .button_2 = true }, input_override.player_2.?.current_input);
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expect(input_override.player_1 != null);
     try testing.expect(input_override.player_2 != null);
     try testing.expectEqual(model.Input{ .button_1 = true }, input_override.player_1.?.previous_input);
@@ -319,7 +364,7 @@ test "should repeat the input sequence until stopped when repeat is set to true"
     try testing.expectEqual(model.Input{ .button_3 = true }, input_override.player_1.?.current_input);
     try testing.expectEqual(model.Input{ .button_4 = true }, input_override.player_2.?.current_input);
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expectEqual(model.Input{}, input_override.player_1.?.previous_input);
     try testing.expectEqual(model.Input{}, input_override.player_2.?.previous_input);
     try testing.expectEqual(model.Input{ .button_1 = true }, input_override.player_1.?.current_input);
@@ -327,7 +372,7 @@ test "should repeat the input sequence until stopped when repeat is set to true"
 
     input.stop();
 
-    input.processFrame(&input_override);
+    input.processFrame(&input_override, .practice);
     try testing.expectEqual(null, input_override.player_1);
     try testing.expectEqual(null, input_override.player_2);
 }

@@ -62,7 +62,7 @@ pub const Core = struct {
         self.move_detector.detect(&frame);
         self.move_measurer.measure(&frame);
         self.automation.processFrame(base_dir, &settings.automation, &self.controller, &frame);
-        self.tool_assisted_input.processFrame(input_override);
+        self.tool_assisted_input.processFrame(input_override, frame.source);
         self.controller.processFrame(&frame, context, processFrame);
         self.tai_recording_coordinator.processFrame(&self.tool_assisted_input, &self.controller);
     }
