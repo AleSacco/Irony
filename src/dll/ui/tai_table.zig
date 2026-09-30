@@ -428,7 +428,7 @@ pub const TaiTable = struct {
             }
         };
 
-        const cell_color = switch (cell_type) {
+        var cell_color = switch (cell_type) {
             .normal => if (frame_maybe) |frame| block: {
                 break :block switch (frame.getPlayerById(player_id).can_interact orelse true) {
                     true => imgui.igGetStyle().*.Colors[imgui.ImGuiCol_TableRowBg],
@@ -438,6 +438,9 @@ pub const TaiTable = struct {
             .selected => imgui.igGetStyle().*.Colors[imgui.ImGuiCol_HeaderHovered],
             .active => imgui.igGetStyle().*.Colors[imgui.ImGuiCol_HeaderActive],
         };
+        if (!imgui.igIsWindowFocused(imgui.ImGuiFocusedFlags_ChildWindows)) {
+            cell_color.w *= 0.75;
+        }
         imgui.igTableSetBgColor(imgui.ImGuiTableBgTarget_CellBg, imgui.igGetColorU32_Vec4(cell_color), -1);
 
         switch (self.state) {
