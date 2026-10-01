@@ -1,3 +1,11 @@
+Many, many thanks to Tomislav Ivankovic for this fantastic tool.
+
+This fork is a simple modification that:
+- Simplifies frame advantage visualization, keeping only data from this interaction and coloring numbers red/green;
+- Allows to hide UI headers by the press of a button.
+
+
+
 # Irony
 
 Application that gives it's users the ability to examine situations and inner workings of the T8 and T7 game in forensic detail.
