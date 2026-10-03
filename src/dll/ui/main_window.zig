@@ -7,6 +7,8 @@ const model = @import("../model/root.zig");
 const rendering = @import("../rendering/root.zig");
 const ui = @import("root.zig");
 
+var hide_header: bool = false;
+
 pub const MainWindow = struct {
     match_bar: ui.MatchBar = .{},
     quadrant_layout: ui.QuadrantLayout = .{},
@@ -75,7 +77,16 @@ pub const MainWindow = struct {
             .{ asterisk, file_name },
         ) catch build_info.display_name ++ "###main_window";
 
-        const render_content = imgui.igBegin(title, &ui_instance.is_open, imgui.ImGuiWindowFlags_MenuBar);
+        var windowFlags: c_int = imgui.ImGuiWindowFlags_MenuBar;
+        if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_H, false)) {
+            hide_header = !hide_header;
+        }
+        if (hide_header) {
+            windowFlags = imgui.ImGuiWindowFlags_None;
+            windowFlags |= imgui.ImGuiWindowFlags_NoTitleBar;
+         }
+
+        const render_content = imgui.igBegin(title, &ui_instance.is_open, windowFlags);
         defer imgui.igEnd();
         if (!render_content) {
             return;
@@ -125,12 +136,16 @@ pub const MainWindow = struct {
             }
             imgui.igEndChild();
         }
-        if (imgui.igBeginChild_Str("controls", .{}, 0, 0)) {
-            const start_y = imgui.igGetCursorPosY();
-            self.controls.draw(controller);
-            self.controls_height = imgui.igGetCursorPosY() - start_y;
+        if (!hide_header){
+            if (imgui.igBeginChild_Str("controls", .{}, 0, 0)) {
+                const start_y = imgui.igGetCursorPosY();
+                self.controls.draw(controller);
+                self.controls_height = imgui.igGetCursorPosY() - start_y;
+            }
+            imgui.igEndChild();
+        } else {
+            self.controls_height = 0;
         }
-        imgui.igEndChild();
     }
 
     pub fn draw3D(

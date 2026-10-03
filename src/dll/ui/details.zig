@@ -685,7 +685,7 @@ pub const Details = struct {
         imgui.igPushStyleColor_Vec4(imgui.ImGuiCol_HeaderActive, header_color);
         defer imgui.igPopStyleColor(2);
 
-        imgui.igTableSetupScrollFreeze(0, 1);
+        // imgui.igTableSetupScrollFreeze(0, 1);
         imgui.igTableSetupColumn("Property", 0, 0, 0);
         imgui.igTableSetupColumn(getHeaderName(settings.column_1), 0, 0, 0);
         imgui.igTableSetupColumn(getHeaderName(settings.column_2), 0, 0, 0);
@@ -925,30 +925,19 @@ fn drawI32ActualMinMax(value: model.I32ActualMinMax, alpha: f32) void {
     } else {
         writer.writeAll(empty_value_string) catch {};
     }
-    writer.writeAll(" (") catch {};
-    if (value.min) |min| {
-        if (min > 0) {
-            writer.writeByte('+') catch {};
-        }
-        writer.print("{}", .{min}) catch {};
-    } else {
-        writer.writeAll(empty_value_string) catch {};
-    }
-    writer.writeAll(", ") catch {};
-    if (value.max) |max| {
-        if (max > 0) {
-            writer.writeByte('+') catch {};
-        }
-        writer.print("{}", .{max}) catch {};
-    } else {
-        writer.writeAll(empty_value_string) catch {};
-    }
-    writer.writeByte(')') catch {};
     if (writer.end >= buffer.len - 1) {
         drawText(error_string, alpha);
         return;
     }
-    drawText(buffer[0..writer.end :0], alpha);
+    var polarityColor: ?imgui.ImVec4 = null;
+    if (value.actual) |actual| {
+        if (actual > 0) {
+            polarityColor = imgui.ImVec4{ .x = 0.3, .y = 1.0, .z = 0.3, .w = alpha };
+        } else if (actual < 0) {
+            polarityColor = imgui.ImVec4{ .x = 1.0, .y = 0.3, .z = 0.3, .w = alpha };
+        }
+    }
+    drawColoredText(buffer[0..writer.end :0], alpha, polarityColor);
 }
 
 fn drawF32MinMax(value: model.F32MinMax, alpha: f32) void {
@@ -1235,6 +1224,34 @@ fn drawText(text: [:0]const u8, alpha: f32) void {
         .z = 1,
         .w = alpha,
     };
+    imgui.igTextColored(color, "%s", text.ptr);
+
+    var rect: imgui.ImRect = undefined;
+    imgui.igGetItemRectMin(&rect.Min);
+    imgui.igGetItemRectMax(&rect.Max);
+    _ = imgui.igItemAdd(rect, imgui.igGetID_Str(text), null, imgui.ImGuiItemFlags_NoNav);
+
+    const cell_hovered = imgui.igTableGetHoveredColumn() == imgui.igTableGetColumnIndex() and
+        imgui.igTableGetHoveredRow() == imgui.igTableGetRowIndex();
+    const mouse_clicked = imgui.igIsMouseClicked_Bool(imgui.ImGuiMouseButton_Left, false);
+    if (cell_hovered and mouse_clicked) {
+        imgui.igSetClipboardText(text);
+        sdk.ui.toasts.send(.info, null, "Copied to clipboard: {s}", .{text});
+    }
+
+    if (builtin.is_test) {
+        imgui.teItemAdd(imgui.igGetCurrentContext(), imgui.igGetID_Str(text), &rect, null);
+    }
+}
+
+fn drawColoredText(text: [:0]const u8, alpha: f32, textColor: ?imgui.ImVec4) void {
+    const baseColor = imgui.ImVec4{
+        .x = 1,
+        .y = 1,
+        .z = 1,
+        .w = alpha,
+    };
+    const color = textColor orelse baseColor;
     imgui.igTextColored(color, "%s", text.ptr);
 
     var rect: imgui.ImRect = undefined;
