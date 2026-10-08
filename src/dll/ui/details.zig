@@ -4,6 +4,146 @@ const imgui = @import("imgui");
 const sdk = @import("../../sdk/root.zig");
 const model = @import("../model/root.zig");
 
+
+
+const OverlayHud = struct {
+    persistent_value: i32 = 0,
+    persistent_attack: ?model.AttackType = null,
+    persistent_is_left: bool = true,
+    has_active_data: bool = false,
+    countdown_timer: f32 = 0.0,
+
+    pub fn update(self: *OverlayHud, settings: *const model.DetailsSettings,
+                  value: model.I32ActualMinMax, attack_type: ?model.AttackType, is_left: ?bool) void {
+        if (value.actual) |actual| {
+
+            self.persistent_value = actual;
+            self.has_active_data = true;
+            const config_seconds = settings.fade_out_duration;
+            self.countdown_timer = if (config_seconds > 0.0) config_seconds * 60.0 else 180.0;
+
+            if (attack_type != null and attack_type.? != .not_attack) {
+                self.persistent_attack = attack_type;
+            }
+            self.persistent_is_left = is_left orelse true;
+
+        } else {
+
+            if (self.countdown_timer > 0.0) {
+                self.countdown_timer -= 1.0;
+            } else {
+                self.has_active_data = false;
+                self.persistent_attack = null;
+            }
+
+        }
+    }
+
+    pub fn render(self: *const OverlayHud) void {
+        if (!self.has_active_data) return;
+
+        var local_buffer: [32]u8 = [_]u8{0} ** 32;
+        var local_stream = std.io.fixedBufferStream(&local_buffer);
+        const w = local_stream.writer();
+
+        if (self.persistent_value > 0) w.writeByte('+') catch {};
+        w.print("{}", .{self.persistent_value}) catch {};
+        const hud_string = local_stream.getWritten();
+
+        const draw_list = imgui.igGetForegroundDrawList_Nil();
+        const current_font = imgui.igGetFont(); 
+        const base_font_size = imgui.igGetFontSize();
+        const viewport = imgui.igGetMainViewport();
+
+        // Colors are in 0xAABBGGRR format
+        var text_color: u32 = 0xFFFFFFFF; 
+        if (self.persistent_value > 0) {
+            text_color = 0xFF00FF00;
+        } else if (self.persistent_value < 0) {
+            text_color = 0xFF0000FF;
+        }
+        var bubble_color: u32 = 0x00000000;
+        var attack_y_offset: f32 = 0.0;
+        
+        if (self.persistent_attack) |AT| {
+            switch (AT) {
+                .high, .unblockable_high => {
+                    bubble_color = 0x880000FF;
+                    attack_y_offset = viewport.*.Size.y * -0.35;
+                },
+                .mid, .unblockable_mid => {
+                    bubble_color = 0x8800FFFF;
+                    attack_y_offset = 0.0;
+                },
+                .low, .special_low, .unblockable_low => {
+                    bubble_color = 0x88FF0000;
+                    attack_y_offset = viewport.*.Size.y * 0.2;
+                },
+                .throw => {
+                    bubble_color = 0x88FF00FF;
+                    attack_y_offset = viewport.*.Size.y * -0.35;
+                },
+                else => {},
+            }
+        }
+
+        // Colors and sizes definitions
+        const font_scale_size = base_font_size * 15.0;
+        const border_color: u32 = 0xFF000000; 
+        const border_thickness: f32 = 8.0;
+        const bold_thickness: f32 = 5.0;
+        const layout_x_percentage: f32 = if (self.persistent_is_left) 0.15 else 0.95; 
+        const draw_bubble: bool = false;
+        const estimated_width = @as(f32, @floatFromInt(hud_string.len)) * (font_scale_size * 0.55);
+        var center_x = viewport.*.Size.x * layout_x_percentage;
+        if (!self.persistent_is_left) {
+            center_x -= estimated_width;
+        }
+        const top_y = (viewport.*.Size.y * 0.5) + attack_y_offset;
+        const screen_pos = imgui.ImVec2{ .x = center_x, .y = top_y };
+
+        // Backdrop bubble
+        if (self.persistent_attack != null and draw_bubble) {
+            const panel_min = imgui.ImVec2{ .x = screen_pos.x - 30.0, .y = screen_pos.y - 15.0 };
+            const panel_max = imgui.ImVec2{ .x = screen_pos.x + estimated_width + 30.0, .y = screen_pos.y + font_scale_size + 15.0 };
+            
+            imgui.ImDrawList_AddRect(draw_list, panel_min, panel_max, 0xFF000000, 16.0, imgui.ImDrawFlags_None, 3.0);
+            imgui.ImDrawList_AddRectFilled(draw_list, panel_min, panel_max, bubble_color, 16.0, imgui.ImDrawFlags_None);
+        }
+
+        // Text contrast outline
+        const offsets = [_][2]f32{ .{ -border_thickness, -border_thickness },
+                                   .{ border_thickness, -border_thickness },
+                                   .{ -border_thickness, border_thickness },
+                                   .{ border_thickness, border_thickness }
+                                 };
+        inline for (offsets) |offset| {
+            const outline_pos = imgui.ImVec2{ .x = screen_pos.x + offset[0], .y = screen_pos.y + offset[1] };
+            imgui.ImDrawList_AddText_FontPtr(draw_list, current_font, font_scale_size, outline_pos, border_color,
+                                             hud_string.ptr, hud_string.ptr + hud_string.len, 0.0, null);
+        }
+
+        // Bolding
+        const bold_offsets = [_][2]f32{ .{ -bold_thickness, -bold_thickness },
+                                        .{ bold_thickness, -bold_thickness },
+                                        .{ -bold_thickness, bold_thickness },
+                                        .{ bold_thickness, bold_thickness }
+                                      };
+        inline for (bold_offsets) |b_offset| {
+            const bold_pos = imgui.ImVec2{ .x = screen_pos.x + b_offset[0], .y = screen_pos.y + b_offset[1] };
+            imgui.ImDrawList_AddText_FontPtr(draw_list, current_font, font_scale_size, bold_pos, text_color,
+                                             hud_string.ptr, hud_string.ptr + hud_string.len, 0.0, null);
+        }
+
+        // Foreground core text
+        imgui.ImDrawList_AddText_FontPtr(draw_list, current_font, font_scale_size, screen_pos, text_color,
+                                         hud_string.ptr, hud_string.ptr + hud_string.len, 0.0, null);
+    }
+};
+
+var overlay_hud = OverlayHud{};
+ 
+
 pub const Details = struct {
     irony_version: Row(
         "Irony Version",
@@ -657,6 +797,21 @@ pub const Details = struct {
             c1.getHurtCylindersHeight(frame.floor_z),
             c2.getHurtCylindersHeight(frame.floor_z),
         );
+
+    var active_attack_type: ?model.AttackType = null;
+    if (c1.getFrameAdvantage(c2).actual != null) {
+        if (c1.move_phase == .recovery and c1.attack_type != .not_attack) {
+            active_attack_type = c1.attack_type;
+        } 
+        else if (c2.move_phase == .recovery and c2.attack_type != .not_attack) {
+            active_attack_type = c2.attack_type;
+        }
+        else {
+            active_attack_type = if (c1.attack_type != .not_attack) c1.attack_type else c2.attack_type;
+        }
+    }
+        const is_mainplayer_left = (frame.getPlayerByRole(.main) == frame.getPlayerBySide(.left));
+        overlay_hud.update(settings, c1.getFrameAdvantage(c2), active_attack_type, is_mainplayer_left);
     }
 
     pub fn update(self: *Self, delta_time: f32) void {
@@ -696,6 +851,7 @@ pub const Details = struct {
                 @field(self, field.name).draw(settings);
             }
         }
+        overlay_hud.render();
     }
 
     fn getHeaderName(column_setting: model.DetailsSettings.Column) [:0]const u8 {
