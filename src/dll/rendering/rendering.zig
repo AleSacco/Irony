@@ -13,24 +13,26 @@ const dx = switch (rendering_api) {
 };
 
 pub const Rendering = struct {
+    triangles: Triangles,
     lines: Lines,
     shapes: rendering.Shapes,
 
     const Self = @This();
     const Lines = rendering.Lines(rendering_api);
+    const Triangles = rendering.Triangles(rendering_api);
 
     pub fn init(allocator: std.mem.Allocator, context: ?*const dx.Context) Self {
-        const lines = Lines.init(allocator, context);
-        const shapes = rendering.Shapes.init(allocator);
         return .{
-            .lines = lines,
-            .shapes = shapes,
+            .triangles = Triangles.init(allocator, context),
+            .lines = Lines.init(allocator, context),
+            .shapes = rendering.Shapes.init(allocator),
         };
     }
 
     pub fn deinit(self: *Self, context: ?*const dx.Context) void {
         self.shapes.deinit();
         self.lines.deinit(context);
+        self.triangles.deinit(context);
     }
 
     pub fn render(
@@ -41,6 +43,7 @@ pub const Rendering = struct {
         settings: *const model.GeneralSettings.Rendering3D,
     ) void {
         defer self.lines.clear();
+        defer self.triangles.clear();
         defer self.shapes.clear();
         if (!settings.enabled or !isAllowedToRender(game_memory)) {
             return;
@@ -70,15 +73,17 @@ pub const Rendering = struct {
             }
         };
 
-        const camera = game_memory.camera_manager.toConstPointer() orelse return;
-        const world_to_clip = calculateWorldToClip(context, camera) orelse return;
+        const view_info = game_memory.overridden_view_info.toConstPointer() orelse return;
+        const world_to_clip = calculateWorldToClip(context, view_info) orelse return;
         const clip_to_world = world_to_clip.inverse() orelse return;
 
-        self.shapes.render(&self.lines, camera.position.convert());
+        const camera_position = view_info.position.convert();
+        self.shapes.render(&self.triangles, &self.lines, camera_position);
+        self.triangles.render(context, buffer_context, world_to_clip);
         self.lines.render(
             context,
             buffer_context,
-            camera.position.convert(),
+            camera_position,
             world_to_clip,
             clip_to_world,
             settings.occluded_alpha,
@@ -87,9 +92,9 @@ pub const Rendering = struct {
         );
     }
 
-    fn calculateWorldToClip(context: *const dx.Context, camera: *const game.CameraManager(game_id)) ?sdk.math.Mat4 {
-        const position: sdk.math.Vec3 = camera.position.convert();
-        const rotation: sdk.math.Vec3 = camera.rotation.convert();
+    fn calculateWorldToClip(context: *const dx.Context, view_info: *const game.ViewInfo(game_id)) ?sdk.math.Mat4 {
+        const position: sdk.math.Vec3 = view_info.position.convert();
+        const rotation: sdk.math.Vec3 = view_info.rotation.convert();
         const pitch = rotation.x();
         const yaw = rotation.y();
         const roll = rotation.z();
@@ -100,7 +105,7 @@ pub const Rendering = struct {
         const aspect_ratio = block: {
             const size = context.getBackBufferSize() catch {
                 std.log.warn(
-                    "When calculating world to clip matrix, failed to get back buffer size." ++
+                    "When calculating world to clip matrix, failed to get back buffer size. " ++
                         "Defaulting to 16:9 aspect ratio.",
                     .{},
                 );
@@ -108,7 +113,7 @@ pub const Rendering = struct {
             };
             if (size.x() <= 0 or size.y() <= 0) {
                 std.log.warn(
-                    "When calculating world to clip matrix, got invalid back buffer size {}x{}." ++
+                    "When calculating world to clip matrix, got invalid back buffer size {}x{}. " ++
                         "Defaulting to 16:9 aspect ratio.",
                     .{ size.x(), size.y() },
                 );
@@ -116,7 +121,7 @@ pub const Rendering = struct {
             }
             break :block @as(f32, @floatFromInt(size.x())) / @as(f32, @floatFromInt(size.y()));
         };
-        const horizontal_fov: f32 = camera.horizontal_fov.convert();
+        const horizontal_fov: f32 = view_info.horizontal_fov.convert();
         const vertical_fov = 2 * std.math.atan2(std.math.tan(0.5 * horizontal_fov), aspect_ratio);
         if (vertical_fov < 1 * std.math.rad_per_deg) {
             return null; // Camera not fully initialized.
@@ -128,6 +133,8 @@ pub const Rendering = struct {
 
     fn isAllowedToRender(game_memory: *const game.Memory(game_id)) bool {
         const source = game.Capturer(game_id).captureSource(
+            game_memory.player_1.toConstPointer(),
+            game_memory.player_2.toConstPointer(),
             game_memory.match.toConstPointer(),
             game_memory.replay_mode.toConstPointer(),
             &game_memory.functions,

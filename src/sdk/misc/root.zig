@@ -1,4 +1,3 @@
-pub const BaseDir = @import("base_dir.zig").BaseDir;
 pub const bounded_array_tag = @import("bounded_array.zig").bounded_array_tag;
 pub const BoundedArray = @import("bounded_array.zig").BoundedArray;
 pub const CircularBuffer = @import("circular_buffer.zig").CircularBuffer;
@@ -16,7 +15,6 @@ pub const areAllFieldsNull = @import("meta.zig").areAllFieldsNull;
 pub const enumArrayToEnumFieldStruct = @import("meta.zig").enumArrayToEnumFieldStruct;
 pub const Task = @import("task.zig").Task;
 pub const Timer = @import("timer.zig").Timer;
-pub const TimerConfig = @import("timer.zig").TimerConfig;
 pub const Timestamp = @import("timestamp.zig").Timestamp;
 pub const TimeZone = @import("timestamp.zig").TimeZone;
 pub const Version = @import("version.zig").Version;

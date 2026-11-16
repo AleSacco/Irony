@@ -7,7 +7,7 @@ pub const matrix_tag = opaque {};
 
 pub fn Matrix(comptime size: usize, comptime Element: type) type {
     if (@typeInfo(Element) != .int and @typeInfo(Element) != .float) {
-        @compileError("Expected a int or float type argument but got type: " ++ @typeName(Element));
+        @compileError("Expected an int or float type argument but got type: " ++ @typeName(Element));
     }
     return extern struct {
         array: Array,
@@ -68,24 +68,27 @@ pub fn Matrix(comptime size: usize, comptime Element: type) type {
         }
 
         pub fn fromFlat(flat: Flat) Self {
-            return @bitCast(flat);
+            const pointer: *const Self = @ptrCast(&flat);
+            return pointer.*;
         }
 
         pub fn fromCoords(coords: Coords) Self {
             if (size > 4) {
-                @compileError("This operation is not defined for matrices larger then 4x4.");
+                @compileError("This operation is not defined for matrices larger than 4x4.");
             }
-            return @bitCast(coords);
+            const pointer: *const Self = @ptrCast(&coords);
+            return pointer.*;
         }
 
         pub fn fill(value: Element) Self {
-            const row = [1]Element{value} ** size;
-            const array = [1]([size]Element){row} ** size;
+            const row: [size]Element = @splat(value);
+            const array: [size][size]Element = @splat(row);
             return .{ .array = array };
         }
 
         pub fn toFlat(self: Self) Flat {
-            return @bitCast(self);
+        	const pointer: *const Flat = @ptrCast(&self);
+            return pointer.*;
         }
 
         pub fn asFlat(self: anytype) misc.SelfBasedPointer(@TypeOf(self), Self, Flat) {
@@ -94,14 +97,15 @@ pub fn Matrix(comptime size: usize, comptime Element: type) type {
 
         pub fn toCoords(self: Self) Coords {
             if (size > 4) {
-                @compileError("This operation is not defined for matrices larger then 4x4.");
+                @compileError("This operation is not defined for matrices larger than 4x4.");
             }
-            return @bitCast(self);
+            const pointer: *const Coords = @ptrCast(&self);
+            return pointer.*;
         }
 
         pub fn asCoords(self: anytype) misc.SelfBasedPointer(@TypeOf(self), Self, Coords) {
             if (size > 4) {
-                @compileError("This operation is not defined for matrices larger then 4x4.");
+                @compileError("This operation is not defined for matrices larger than 4x4.");
             }
             return @ptrCast(self);
         }
@@ -471,7 +475,7 @@ pub fn Matrix(comptime size: usize, comptime Element: type) type {
             var up_cross_z = normalized_up.cross(z);
             if (up_cross_z.isZero(0)) {
                 std.log.warn(
-                    "When creating a look at matrix, the supplied up vector {f} was colinear with the look direction {f}. " ++
+                    "When creating a look at matrix, the supplied up vector {f} was collinear with the look direction {f}. " ++
                         "Using fallback up direction.",
                     .{ up, direction },
                 );
@@ -521,7 +525,7 @@ pub fn Matrix(comptime size: usize, comptime Element: type) type {
             });
             if (left == right) {
                 std.log.warn(
-                    "When creating a orthographic matrix, the supplied left value {} was equal to right {}. " ++
+                    "When creating an orthographic matrix, the supplied left value {} was equal to right {}. " ++
                         "Returning fallback value.",
                     .{ left, right },
                 );
@@ -529,7 +533,7 @@ pub fn Matrix(comptime size: usize, comptime Element: type) type {
             }
             if (bottom == top) {
                 std.log.warn(
-                    "When creating a orthographic matrix, the supplied bottom value {} was equal to top {}. " ++
+                    "When creating an orthographic matrix, the supplied bottom value {} was equal to top {}. " ++
                         "Returning fallback value.",
                     .{ bottom, top },
                 );
@@ -537,7 +541,7 @@ pub fn Matrix(comptime size: usize, comptime Element: type) type {
             }
             if (near == far) {
                 std.log.warn(
-                    "When creating a orthographic matrix, the supplied near value {} was equal to far {}. " ++
+                    "When creating an orthographic matrix, the supplied near value {} was equal to far {}. " ++
                         "Returning fallback value.",
                     .{ near, far },
                 );
@@ -658,7 +662,7 @@ pub fn Matrix(comptime size: usize, comptime Element: type) type {
             });
             if (left == right) {
                 std.log.warn(
-                    "When creating a frustum matrix, the supplied left value {} was equal to right {}. " ++
+                    "When creating a Z-infinite frustum matrix, the supplied left value {} was equal to right {}. " ++
                         "Returning fallback value.",
                     .{ left, right },
                 );
@@ -666,7 +670,7 @@ pub fn Matrix(comptime size: usize, comptime Element: type) type {
             }
             if (bottom == top) {
                 std.log.warn(
-                    "When creating a frustum matrix, the supplied bottom value {} was equal to top {}. " ++
+                    "When creating a Z-infinite frustum matrix, the supplied bottom value {} was equal to top {}. " ++
                         "Returning fallback value.",
                     .{ bottom, top },
                 );
@@ -740,7 +744,7 @@ pub fn Matrix(comptime size: usize, comptime Element: type) type {
             const max_fov = 179 * std.math.rad_per_deg;
             const fov = if (vertical_fov >= min_fov and vertical_fov <= max_fov) vertical_fov else block: {
                 std.log.warn(
-                    "When creating a perspective matrix, the supplied vertical fov {} was out of bounds. " ++
+                    "When creating a Z-infinite perspective matrix, the supplied vertical fov {} was out of bounds. " ++
                         "Clamping the fov back into bounds.",
                     .{vertical_fov},
                 );

@@ -115,7 +115,7 @@ pub const Blocking = enum(u3) {
     fully_blocking_lows = 4,
 };
 
-pub const Crushing = packed struct {
+pub const Crushing = packed struct(u5) {
     high_crushing: bool = false,
     low_crushing: bool = false,
     anti_air_only_crushing: bool = false,
@@ -143,14 +143,6 @@ pub const HeatTag = enum(u2) {
 
 pub const ActivatedHeat = struct {
     gauge: f32,
-};
-
-pub const Camera = struct {
-    position: sdk.math.Vec3,
-    pitch: f32,
-    yaw: f32,
-    roll: f32,
-    horizontal_fov: f32 = 65.0,
 };
 
 pub const Source = enum(u2) {

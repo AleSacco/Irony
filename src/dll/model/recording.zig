@@ -33,31 +33,36 @@ pub const RecordingFormat = enum {
 
 const buffer_size = 4096;
 
-pub fn saveRecording(allocator: std.mem.Allocator, frames: []const model.Frame, file_path: []const u8) !void {
-    const file = std.fs.cwd().createFile(file_path, .{}) catch |err| {
+pub fn saveRecording(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    frames: []const model.Frame,
+) !void {
+    const file = std.Io.Dir.cwd().createFile(io, file_path, .{}) catch |err| {
         sdk.misc.error_context.new("Failed to create or open file: {s}", .{file_path});
         return err;
     };
-    defer file.close();
+    defer file.close(io);
     var buffer: [buffer_size]u8 = undefined;
-    var writer = file.writer(&buffer);
+    var writer = file.writer(io, &buffer);
 
     const format = RecordingFormat.fromFilePath(file_path) orelse .irony;
     switch (format) {
         .irony => {
             sdk.io.writeIronyFormat(model.Frame, allocator, frames, &writer.interface) catch |err| {
-                sdk.misc.error_context.append("Failed write recording content in Irony format.", .{});
+                sdk.misc.error_context.append("Failed to write recording content in Irony format.", .{});
                 return err;
             };
         },
         .json => {
             sdk.io.writeLargeJsonArray(model.Frame, frames, &writer.interface) catch |err| {
-                sdk.misc.error_context.append("Failed write recording content in JSON format.", .{});
+                sdk.misc.error_context.append("Failed to write recording content in JSON format.", .{});
                 return err;
             };
         },
         .json_zstd => {
-            errdefer sdk.misc.error_context.append("Failed write recording content in JSON zstd format.", .{});
+            errdefer sdk.misc.error_context.append("Failed to write recording content in JSON zstd format.", .{});
             var encoder = sdk.io.ZstdEncoder.init(allocator, &writer.interface, 0) catch |err| {
                 sdk.misc.error_context.append("Failed to initialize zstd encoder.", .{});
                 return err;
@@ -65,11 +70,11 @@ pub fn saveRecording(allocator: std.mem.Allocator, frames: []const model.Frame, 
             defer encoder.deinit();
             var encoder_writer = encoder.writer();
             sdk.io.writeLargeJsonArray(model.Frame, frames, &encoder_writer) catch |err| {
-                sdk.misc.error_context.append("Failed write recording content in JSON format.", .{});
+                sdk.misc.error_context.append("Failed to write recording content in JSON format.", .{});
                 return err;
             };
             encoder_writer.flush() catch |err| {
-                sdk.misc.error_context.append("Failed to flush zstd encoder.", .{});
+                sdk.misc.error_context.new("Failed to flush zstd encoder.", .{});
                 return err;
             };
         },
@@ -81,32 +86,32 @@ pub fn saveRecording(allocator: std.mem.Allocator, frames: []const model.Frame, 
     };
 }
 
-pub fn loadRecording(allocator: std.mem.Allocator, file_path: []const u8) !Recording {
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+pub fn loadRecording(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8) !Recording {
+    const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
         sdk.misc.error_context.new("Failed to open file: {s}", .{file_path});
         return err;
     };
-    defer file.close();
+    defer file.close(io);
     var buffer: [buffer_size]u8 = undefined;
-    var reader = file.reader(&buffer);
+    var reader = file.reader(io, &buffer);
 
     const format = RecordingFormat.fromFilePath(file_path) orelse .irony;
     switch (format) {
         .irony => {
             const slice = sdk.io.readIronyFormat(model.Frame, allocator, &reader.interface, &.{}) catch |err| {
-                sdk.misc.error_context.append("Failed read recording content from Irony format.", .{});
+                sdk.misc.error_context.append("Failed to read recording content from Irony format.", .{});
                 return err;
             };
             return .fromOwnedSlice(slice);
         },
         .json => {
             return sdk.io.readLargeJsonArray(model.Frame, allocator, &reader.interface, &.{}) catch |err| {
-                sdk.misc.error_context.append("Failed read recording content from JSON format.", .{});
+                sdk.misc.error_context.append("Failed to read recording content from JSON format.", .{});
                 return err;
             };
         },
         .json_zstd => {
-            errdefer sdk.misc.error_context.append("Failed read recording content from JSON zstd format.", .{});
+            errdefer sdk.misc.error_context.append("Failed to read recording content from JSON zstd format.", .{});
             var decoder = sdk.io.ZstdDecoder.init(allocator, &reader.interface) catch |err| {
                 sdk.misc.error_context.append("Failed to initialize zstd decoder.", .{});
                 return err;
@@ -115,7 +120,7 @@ pub fn loadRecording(allocator: std.mem.Allocator, file_path: []const u8) !Recor
             var decoder_buffer: [buffer_size]u8 = undefined;
             var decoder_reader = decoder.reader(&decoder_buffer);
             return sdk.io.readLargeJsonArray(model.Frame, allocator, &decoder_reader, &.{}) catch |err| {
-                sdk.misc.error_context.append("Failed read recording content from JSON format.", .{});
+                sdk.misc.error_context.append("Failed to read recording content from JSON format.", .{});
                 return err;
             };
         },
@@ -143,9 +148,11 @@ test "loadRecording should load the same frames that the saveRecording saved whe
         .{ .frames_since_round_start = 2 },
         .{ .frames_since_round_start = 3 },
     };
-    try saveRecording(testing.allocator, &frames, "./test_assets/recording.irony");
-    defer std.fs.cwd().deleteFile("./test_assets/recording.irony") catch @panic("Failed to cleanup test file.");
-    var recording = try loadRecording(testing.allocator, "./test_assets/recording.irony");
+    try saveRecording(testing.allocator, testing.io, "recording.irony", &frames);
+    defer std.Io.Dir.cwd().deleteFile(testing.io, "recording.irony") catch {
+        @panic("Failed to clean up test file.");
+    };
+    var recording = try loadRecording(testing.allocator, testing.io, "recording.irony");
     defer recording.deinit(testing.allocator);
     try testing.expectEqualSlices(model.Frame, &frames, recording.items);
 }
@@ -156,40 +163,45 @@ test "loadRecording should load the same frames that the saveRecording saved whe
         .{ .frames_since_round_start = 2 },
         .{ .frames_since_round_start = 3 },
     };
-    try saveRecording(testing.allocator, &frames, "./test_assets/recording.json");
-    defer std.fs.cwd().deleteFile("./test_assets/recording.json") catch @panic("Failed to cleanup test file.");
-    var recording = try loadRecording(testing.allocator, "./test_assets/recording.json");
+    try saveRecording(testing.allocator, testing.io, "recording.json", &frames);
+    defer std.Io.Dir.cwd().deleteFile(testing.io, "recording.json") catch {
+        @panic("Failed to clean up test file.");
+    };
+    var recording = try loadRecording(testing.allocator, testing.io, "recording.json");
     defer recording.deinit(testing.allocator);
     try testing.expectEqualSlices(model.Frame, &frames, recording.items);
 }
 
 test "loadRecording should load the same frames that the saveRecording saved when format is json zstd" {
-    errdefer |err| sdk.misc.error_context.logError(err);
     const frames = [_]model.Frame{
         .{ .frames_since_round_start = 1 },
         .{ .frames_since_round_start = 2 },
         .{ .frames_since_round_start = 3 },
     };
-    try saveRecording(testing.allocator, &frames, "./test_assets/recording.json.zstd");
-    defer std.fs.cwd().deleteFile("./test_assets/recording.json.zstd") catch @panic("Failed to cleanup test file.");
-    var recording = try loadRecording(testing.allocator, "./test_assets/recording.json.zstd");
+    try saveRecording(testing.allocator, testing.io, "recording.json.zstd", &frames);
+    defer std.Io.Dir.cwd().deleteFile(testing.io, "recording.json.zstd") catch {
+        @panic("Failed to clean up test file.");
+    };
+    var recording = try loadRecording(testing.allocator, testing.io, "recording.json.zstd");
     defer recording.deinit(testing.allocator);
     try testing.expectEqualSlices(model.Frame, &frames, recording.items);
 }
 
 test "saveRecording should overwrite the file if it already exists" {
-    try saveRecording(testing.allocator, &.{
+    try saveRecording(testing.allocator, testing.io, "recording.irony", &.{
         .{ .frames_since_round_start = 1 },
         .{ .frames_since_round_start = 2 },
         .{ .frames_since_round_start = 3 },
-    }, "./test_assets/recording.irony");
-    defer std.fs.cwd().deleteFile("./test_assets/recording.irony") catch @panic("Failed to cleanup test file.");
-    try saveRecording(testing.allocator, &.{
+    });
+    defer std.Io.Dir.cwd().deleteFile(testing.io, "recording.irony") catch {
+        @panic("Failed to clean up test file.");
+    };
+    try saveRecording(testing.allocator, testing.io, "recording.irony", &.{
         .{ .frames_since_round_start = 4 },
         .{ .frames_since_round_start = 5 },
         .{ .frames_since_round_start = 6 },
-    }, "./test_assets/recording.irony");
-    var recording = try loadRecording(testing.allocator, "./test_assets/recording.irony");
+    });
+    var recording = try loadRecording(testing.allocator, testing.io, "recording.irony");
     defer recording.deinit(testing.allocator);
     try testing.expectEqualSlices(model.Frame, &.{
         .{ .frames_since_round_start = 4 },

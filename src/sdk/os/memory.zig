@@ -61,11 +61,7 @@ fn isMemoryAccessibleAndInOneOfModes(
         } else {
             return false;
         }
-        const next_address = @addWithOverflow(@intFromPtr(info.BaseAddress), info.RegionSize);
-        if (next_address[1] == 1) {
-            return true;
-        }
-        current_address = next_address[0];
+        current_address = std.math.add(usize, @intFromPtr(info.BaseAddress), info.RegionSize) catch return true;
     }
     return true;
 }
@@ -139,7 +135,7 @@ test "isMemoryRangeValid should return true when range does not overflow" {
     try testing.expectEqual(true, isMemoryRangeValid(std.math.maxInt(usize) - 4, 5));
 }
 
-test "isMemoryRangeValid should return true when range overflows" {
+test "isMemoryRangeValid should return false when range overflows" {
     try testing.expectEqual(false, isMemoryRangeValid(std.math.maxInt(usize) / 2, std.math.maxInt(usize)));
     try testing.expectEqual(false, isMemoryRangeValid(2, std.math.maxInt(usize)));
     try testing.expectEqual(false, isMemoryRangeValid(std.math.maxInt(usize) - 4, 6));

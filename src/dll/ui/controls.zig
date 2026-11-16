@@ -112,14 +112,19 @@ pub fn Controls(comptime config: ControlsConfig) type {
 
         fn drawText(test_id: [:0]const u8, comptime fmt: []const u8, args: anytype) void {
             var buffer: [32]u8 = undefined;
-            const text = std.fmt.bufPrintZ(&buffer, fmt, args) catch "error";
+            const text = std.fmt.bufPrintSentinel(&buffer, fmt, args, 0) catch "error";
             imgui.igText("%s", text.ptr);
 
             if (builtin.is_test) {
                 var rect: imgui.ImRect = undefined;
                 imgui.igGetItemRectMin(&rect.Min);
                 imgui.igGetItemRectMax(&rect.Max);
-                const full_test_id = std.fmt.bufPrintZ(&buffer, "{s}: " ++ fmt, .{test_id} ++ args) catch "error";
+                const full_test_id = std.fmt.bufPrintSentinel(
+                    &buffer,
+                    "{s}: " ++ fmt,
+                    .{test_id} ++ args,
+                    0,
+                ) catch "error";
                 imgui.teItemAdd(imgui.igGetCurrentContext(), imgui.igGetID_Str(test_id), &rect, null);
                 imgui.teItemAdd(imgui.igGetCurrentContext(), imgui.igGetID_Str(full_test_id), &rect, null);
             }
@@ -169,7 +174,7 @@ pub fn Controls(comptime config: ControlsConfig) type {
             if (isPlayDisabled(controller)) {
                 return;
             }
-            if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_F1, false)) {
+            if (imgui.igShortcut_Nil(imgui.ImGuiKey_F1, imgui.ImGuiInputFlags_RouteGlobal)) {
                 controller.play();
             }
         }
@@ -198,7 +203,7 @@ pub fn Controls(comptime config: ControlsConfig) type {
             if (isPauseDisabled(controller)) {
                 return;
             }
-            if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_F2, false)) {
+            if (imgui.igShortcut_Nil(imgui.ImGuiKey_F2, imgui.ImGuiInputFlags_RouteGlobal)) {
                 controller.pause();
             }
         }
@@ -227,7 +232,7 @@ pub fn Controls(comptime config: ControlsConfig) type {
             if (isStopDisabled(controller)) {
                 return;
             }
-            if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_F3, false)) {
+            if (imgui.igShortcut_Nil(imgui.ImGuiKey_F3, imgui.ImGuiInputFlags_RouteGlobal)) {
                 controller.stop();
             }
         }
@@ -255,7 +260,7 @@ pub fn Controls(comptime config: ControlsConfig) type {
             if (isRecordDisabled(controller)) {
                 return;
             }
-            if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_F4, false)) {
+            if (imgui.igShortcut_Nil(imgui.ImGuiKey_F4, imgui.ImGuiInputFlags_RouteGlobal)) {
                 controller.record();
             }
         }
@@ -287,7 +292,7 @@ pub fn Controls(comptime config: ControlsConfig) type {
             if (isRewindDisabled(controller)) {
                 return;
             }
-            if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_F5, false)) {
+            if (imgui.igShortcut_Nil(imgui.ImGuiKey_F5, imgui.ImGuiInputFlags_RouteGlobal)) {
                 self.startRewind(controller);
             }
             if (imgui.igIsKeyReleased_Nil(imgui.ImGuiKey_F5)) {
@@ -340,7 +345,7 @@ pub fn Controls(comptime config: ControlsConfig) type {
             if (isFastForwardDisabled(controller)) {
                 return;
             }
-            if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_F8, false)) {
+            if (imgui.igShortcut_Nil(imgui.ImGuiKey_F8, imgui.ImGuiInputFlags_RouteGlobal)) {
                 self.startFastForward(controller);
             }
             if (imgui.igIsKeyReleased_Nil(imgui.ImGuiKey_F8)) {
@@ -391,7 +396,8 @@ pub fn Controls(comptime config: ControlsConfig) type {
             if (isPreviousFrameDisabled(controller)) {
                 return;
             }
-            if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_F6, true)) {
+            const flags = imgui.ImGuiInputFlags_RouteGlobal | imgui.ImGuiInputFlags_Repeat;
+            if (imgui.igShortcut_Nil(imgui.ImGuiKey_F6, flags)) {
                 goToPreviousFrame(controller);
             }
         }
@@ -432,7 +438,8 @@ pub fn Controls(comptime config: ControlsConfig) type {
             if (isNextFrameDisabled(controller)) {
                 return;
             }
-            if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_F7, true)) {
+            const flags = imgui.ImGuiInputFlags_RouteGlobal | imgui.ImGuiInputFlags_Repeat;
+            if (imgui.igShortcut_Nil(imgui.ImGuiKey_F7, flags)) {
                 goToNextFrame(controller);
             }
         }
@@ -469,29 +476,17 @@ pub fn Controls(comptime config: ControlsConfig) type {
             if (imgui.igIsItemHovered(0)) {
                 imgui.igSetTooltip("Clear Recording [F9]");
             }
-            if (self.clear_confirm_open) {
-                imgui.igOpenPopup_Str("Clear recording?", 0);
-            }
-            if (imgui.igBeginPopupModal(
-                "Clear recording?",
+            const action = ui.drawConfirmDialog(
                 &self.clear_confirm_open,
-                imgui.ImGuiWindowFlags_AlwaysAutoResize,
-            )) {
-                defer imgui.igEndPopup();
-                imgui.igText("Are you sure you want to clear the recording?");
-                imgui.igText("Any unsaved recorded data will be lost.");
-                imgui.igSeparator();
-                if (imgui.igButton("Clear", .{})) {
-                    controller.clear();
-                    imgui.igCloseCurrentPopup();
-                    self.clear_confirm_open = false;
-                }
-                imgui.igSameLine(0, -1);
-                imgui.igSetItemDefaultFocus();
-                if (imgui.igButton("Cancel", .{})) {
-                    imgui.igCloseCurrentPopup();
-                    self.clear_confirm_open = false;
-                }
+                "Clear recording?",
+                \\Are you sure you want to clear the recording?
+                \\Any unsaved recorded data will be lost.
+            ,
+                "Clear",
+                "Cancel",
+            );
+            if (action == .confirm) {
+                controller.clear();
             }
         }
 
@@ -499,7 +494,7 @@ pub fn Controls(comptime config: ControlsConfig) type {
             if (isClearDisabled(controller)) {
                 return;
             }
-            if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_F9, false)) {
+            if (imgui.igShortcut_Nil(imgui.ImGuiKey_F9, imgui.ImGuiInputFlags_RouteGlobal)) {
                 if (controller.getTotalFrames() < total_frames_for_clear_confirm) {
                     controller.clear();
                 } else {
@@ -517,10 +512,11 @@ pub fn Controls(comptime config: ControlsConfig) type {
 
         fn drawSpeedButton(controller: *config.Controller) void {
             var buffer: [32]u8 = undefined;
-            const button_text = std.fmt.bufPrintZ(
+            const button_text = std.fmt.bufPrintSentinel(
                 &buffer,
                 " ⏲ {d:.2}x ###speed",
                 .{controller.playback_speed},
+                0,
             ) catch " ⏲ ###speed";
             if (imgui.igButton(button_text, .{})) {
                 imgui.igOpenPopup_Str("speed_popup", 0);
@@ -532,7 +528,7 @@ pub fn Controls(comptime config: ControlsConfig) type {
                 defer imgui.igEndPopup();
                 _ = imgui.igSliderFloat("###speed_slider", &controller.playback_speed, 0.1, 4.0, "%.2fx", 0);
                 for ([_]f32{ 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0 }) |option| {
-                    const text = std.fmt.bufPrintZ(&buffer, "{d:.2}x", .{option}) catch "error";
+                    const text = std.fmt.bufPrintSentinel(&buffer, "{d:.2}x", .{option}, 0) catch "error";
                     if (imgui.igSelectable_Bool(text, controller.playback_speed == option, 0, .{})) {
                         controller.playback_speed = option;
                     }
@@ -1378,7 +1374,7 @@ test "should disable next frame when already on last frame" {
     try context.runTest(.{}, Test.guiFunction, Test.testFunction);
 }
 
-test "should call clear when clear button is clicked or F9 button is pressed" {
+test "should call clear when clear button is clicked or F9 key is pressed" {
     const Test = struct {
         var controller = MockController{ .mode = .live };
         var controls = Controls(.{ .Controller = MockController }){};
@@ -1403,7 +1399,7 @@ test "should call clear when clear button is clicked or F9 button is pressed" {
     try context.runTest(.{}, Test.guiFunction, Test.testFunction);
 }
 
-test "should open confirm dialog when clear button is clicked or F9 button is pressed and total frames is large enough" {
+test "should open confirm dialog when clear button is clicked or F9 key is pressed and total frames is large enough" {
     const Test = struct {
         var controller = MockController{ .mode = .live, .total_frames = 1000 };
         var controls = Controls(.{ .Controller = MockController }){};

@@ -13,10 +13,14 @@ pub fn Memory(comptime game_id: build_info.Game) type {
         secondary_player_info: Proxy(game.PlayerInfo(game_id)),
         match: Pointer(game.Match(game_id)),
         ruleset: Pointer(game.Ruleset(game_id)),
+        battle_restart_code: Pointer(game.BattleRestartCode(game_id)),
         cancel_requirements: Pointer(game.CancelRequirements),
         replay_mode: Proxy(game.ReplayMode),
+        camera_manager: Proxy(game.CameraManager(game_id)),
+        cinematic_controller: Proxy(game.CinematicController),
         depth_buffer: Proxy(game.DepthBuffer(game_id)),
-        camera_manager: Pointer(game.CameraManager(game_id)) = .fromPointer(null),
+        original_view_info: Pointer(game.ViewInfo(game_id)),
+        overridden_view_info: Pointer(game.ViewInfo(game_id)),
         walls: Array(max_walls, Pointer(game.Wall(game_id)), .fromPointer(null), false) = .empty,
         floors: Array(max_floors, Pointer(game.Floor(game_id)), .fromPointer(null), false) = .empty,
         player_starts: Array(max_player_starts, Pointer(game.PlayerStart(game_id)), .fromPointer(null), false) = .empty,
@@ -35,6 +39,7 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                 unrealFree: ?*const game.UnrealFreeFunction = null,
                 findUnrealClass: ?*const game.FindUnrealClassFunction = null,
                 findUnrealObjectsOfClass: ?*const game.FindUnrealObjectsOfClassFunction = null,
+                getViewPoint: ?*const game.GetViewPointFunction(.t7) = null,
             },
             .t8 => struct {
                 tick: ?*const game.TickFunction(.t8) = null,
@@ -47,10 +52,10 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                 getGlobalsMap: ?*const game.GetGlobalsMapFunction = null,
                 findGlobalAddress: ?*const game.FindGlobalAddressFunction = null,
                 isReplay: ?*const game.IsReplayFunction = null,
+                getViewPoint: ?*const game.GetViewPointFunction(.t8) = null,
             },
         };
         pub const UnrealClasses = struct {
-            camera_manager: ?*const game.UnrealClass = null,
             wall: ?*const game.UnrealClass = null,
             photo_mode_wall: ?*const game.UnrealClass = null,
             floor: ?*const game.UnrealClass = null,
@@ -64,16 +69,16 @@ pub fn Memory(comptime game_id: build_info.Game) type {
 
         pub fn init(
             allocator: std.mem.Allocator,
-            base_dir: ?*const sdk.misc.BaseDir,
+            io: std.Io,
             comptime game_hooks: type,
         ) Self {
-            var cache = initPatternCache(allocator, base_dir, pattern_cache_file_name) catch |err| block: {
+            var cache = initPatternCache(allocator, io, pattern_cache_file_name) catch |err| block: {
                 sdk.misc.error_context.append("Failed to initialize pattern cache.", .{});
                 sdk.misc.error_context.logError(err);
                 break :block null;
             };
             defer if (cache) |*pattern_cache| {
-                deinitPatternCache(pattern_cache, base_dir, pattern_cache_file_name);
+                deinitPatternCache(pattern_cache, io, pattern_cache_file_name);
             };
             return switch (game_id) {
                 .t7 => t7Init(&cache, game_hooks),
@@ -85,11 +90,11 @@ pub fn Memory(comptime game_id: build_info.Game) type {
             return .{
                 .game_version = .fromPointer("5.10" ++ .{0}),
                 .player_1 = proxy("player_1", game.Player(.t7), .{
-                    relativeOffset(i32, add(0x3, pattern(cache, "48 8B 15 ?? ?? ?? ?? 44 8B C3"))),
+                    relativeOffset(i32, add(0x3, pattern(cache, "48 8B 35 ?? ?? ?? ?? 8B D9 48 8B"))),
                     0x0,
                 }),
                 .player_2 = proxy("player_2", game.Player(.t7), .{
-                    relativeOffset(i32, add(0xD, pattern(cache, "48 8B 15 ?? ?? ?? ?? 44 8B C3"))),
+                    relativeOffset(i32, add(0xC, pattern(cache, "48 8B 35 ?? ?? ?? ?? 8B D9 48 8B"))),
                     0x0,
                 }),
                 .main_player_info = proxy("main_player_info", game.PlayerInfo(.t7), .{
@@ -123,6 +128,11 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                     game.Ruleset(.t7),
                     relativeOffset(i32, add(0x2, pattern(cache, "8B 05 ?? ?? ?? ?? 83 C0 9C"))),
                 ),
+                .battle_restart_code = pointer(
+                    "battle_restart_code",
+                    game.BattleRestartCode(.t7),
+                    relativeOffset(i32, add(0x2, pattern(cache, "8B 0D ?? ?? ?? ?? 48 89 5C 24 60 4C 89 6C 24 40"))),
+                ),
                 .cancel_requirements = pointer(
                     "cancel_requirements",
                     game.CancelRequirements,
@@ -136,6 +146,11 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                     0x38,
                     0x58,
                 }),
+                .camera_manager = proxy("camera_manager", game.CameraManager(.t7), .{
+                    add(0x238, relativeOffset(i32, add(0x7, pattern(cache, "46 FF FF FF 48 8D 0D")))),
+                    0x0,
+                }),
+                .cinematic_controller = .fromPointer(null), // Doesn't exist in T7.
                 .depth_buffer = proxy("depth_buffer", game.DepthBuffer(.t7), .{
                     relativeOffset(i32, add(0x3, pattern(
                         cache,
@@ -145,6 +160,16 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                     0x98,
                     0x0,
                 }),
+                .original_view_info = pointer(
+                    "original_view_info",
+                    game.ViewInfo(game_id),
+                    @intFromPtr(&game_hooks.last_original_view_info),
+                ),
+                .overridden_view_info = pointer(
+                    "overridden_view_info",
+                    game.ViewInfo(game_id),
+                    @intFromPtr(&game_hooks.last_overridden_view_info),
+                ),
                 .functions = .{
                     .tick = functionPointer(
                         "tick",
@@ -181,6 +206,11 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                             cache,
                             "48 89 5C 24 18 48 89 74 24 20 55 57 41 54 41 56 41 57 48 8D 6C 24 D1 48 81 EC A0 00 00 00",
                         ),
+                    ),
+                    .getViewPoint = functionPointer(
+                        "getViewPoint",
+                        game.GetViewPointFunction(.t7),
+                        pattern(cache, "48 89 5C 24 08 48 89 6C 24 20 56 57 41 56 48 83 EC 30 45 8B F0"),
                     ),
                 },
             };
@@ -228,6 +258,7 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                 }),
                 .match = .fromPointer(null), // Continuously updated address.
                 .ruleset = .fromPointer(null), // Continuously updated address.
+                .battle_restart_code = .fromPointer(null), // Continuously updated address.
                 .cancel_requirements = pointer(
                     "cancel_requirements",
                     game.CancelRequirements,
@@ -238,10 +269,32 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                     0x98,
                     0x70,
                 }),
+                .camera_manager = proxy("camera_manager", game.CameraManager(.t8), .{
+                    0x0, // Continuously updated address.
+                    0x0,
+                }),
+                .cinematic_controller = proxy("cinematic_controller", game.CinematicController, .{
+                    relativeOffset(i32, add(0x1A, pattern(
+                        cache,
+                        "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 57 48 81 EC ?? 01 00 00 48 8B 1D",
+                    ))),
+                    0x20,
+                    0x0,
+                }),
                 .depth_buffer = proxy("depth_buffer", game.DepthBuffer(.t8), .{
                     @intFromPtr(&game_hooks.depth_buffer_address),
                     0x0,
                 }),
+                .original_view_info = pointer(
+                    "original_view_info",
+                    game.ViewInfo(game_id),
+                    @intFromPtr(&game_hooks.last_original_view_info),
+                ),
+                .overridden_view_info = pointer(
+                    "overridden_view_info",
+                    game.ViewInfo(game_id),
+                    @intFromPtr(&game_hooks.last_overridden_view_info),
+                ),
                 .functions = .{
                     .tick = functionPointer(
                         "tick",
@@ -299,6 +352,11 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                         game.IsReplayFunction,
                         pattern(cache, "48 89 5C 24 08 57 48 83 EC 20 C6 01 00"),
                     ),
+                    .getViewPoint = functionPointer(
+                        "getViewPoint",
+                        game.GetViewPointFunction(.t8),
+                        pattern(cache, "48 8B C4 48 89 58 10 48 89 68 18 56 57 41 57 48 81 EC B0 00 00 00 0F 29 70 D8"),
+                    ),
                 },
             };
         }
@@ -311,10 +369,14 @@ pub fn Memory(comptime game_id: build_info.Game) type {
             secondary_player_info: ?*const game.PlayerInfo(game_id) = null,
             match: ?*const game.Match(game_id) = null,
             ruleset: ?*const game.Ruleset(game_id) = null,
+            battle_restart_code: ?*const game.BattleRestartCode(game_id) = null,
             cancel_requirements: ?*const game.CancelRequirements = null,
             replay_mode: ?*const game.ReplayMode = null,
-            depth_buffer: ?*const game.DepthBuffer(game_id) = null,
             camera_manager: ?*const game.CameraManager(game_id) = null,
+            cinematic_controller: ?*const game.CinematicController = null,
+            depth_buffer: ?*const game.DepthBuffer(game_id) = null,
+            original_view_info: ?*const game.ViewInfo(game_id) = null,
+            overridden_view_info: ?*const game.ViewInfo(game_id) = null,
             walls: []const game.Wall(game_id) = &.{},
             floors: []const game.Floor(game_id) = &.{},
             player_starts: []const game.PlayerStart(game_id) = &.{},
@@ -345,10 +407,14 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                 .secondary_player_info = .fromPointer(params.secondary_player_info),
                 .match = .fromPointer(params.match),
                 .ruleset = .fromPointer(params.ruleset),
+                .battle_restart_code = .fromPointer(params.battle_restart_code),
                 .cancel_requirements = .fromPointer(params.cancel_requirements),
                 .replay_mode = .fromPointer(params.replay_mode),
-                .depth_buffer = .fromPointer(params.depth_buffer),
                 .camera_manager = .fromPointer(params.camera_manager),
+                .cinematic_controller = .fromPointer(params.cinematic_controller),
+                .depth_buffer = .fromPointer(params.depth_buffer),
+                .original_view_info = .fromPointer(params.original_view_info),
+                .overridden_view_info = .fromPointer(params.overridden_view_info),
                 .walls = makePointerArray(game.Wall(game_id), max_walls, params.walls),
                 .floors = makePointerArray(game.Floor(game_id), max_floors, params.floors),
                 .player_starts = makePointerArray(game.PlayerStart(game_id), max_player_starts, params.player_starts),
@@ -360,7 +426,6 @@ pub fn Memory(comptime game_id: build_info.Game) type {
         pub fn updateAddresses(self: *Self) void {
             self.updateGlobalAddresses();
             self.updateUnrealClasses();
-            self.updateUnrealObjectAddress((&self.camera_manager), self.unreal_classes.camera_manager);
             self.updateUnrealObjectAddresses(&self.walls, self.unreal_classes.wall);
             self.updateUnrealObjectAddresses(&self.floors, self.unreal_classes.floor);
             self.updateUnrealObjectAddresses(&self.player_starts, self.unreal_classes.player_start);
@@ -376,16 +441,22 @@ pub fn Memory(comptime game_id: build_info.Game) type {
             const map = getGlobalsMap();
             self.match.address = findGlobalAddress(map, &.match);
             self.ruleset.address = findGlobalAddress(map, &.ruleset);
-            self.replay_mode.trail.buffer[0] = findGlobalAddress(map, &.replay) +| 0x8;
+            self.replay_mode.trail.buffer[0] = offsetGlobalAddress(findGlobalAddress(map, &.replay), 0x8);
+            self.battle_restart_code.address = offsetGlobalAddress(findGlobalAddress(map, &.battle_control), 0x3C);
+            self.camera_manager.trail.buffer[0] = offsetGlobalAddress(findGlobalAddress(map, &.camera_root), 0x288);
+        }
+
+        fn offsetGlobalAddress(address: usize, offset: usize) usize {
+            if (address == 0) {
+                return 0;
+            }
+            return address +| offset;
         }
 
         fn updateUnrealClasses(self: *Self) void {
             const findClass = self.functions.findUnrealClass orelse return;
             const w = std.unicode.utf8ToUtf16LeStringLiteral;
             const classes = &self.unreal_classes;
-            if (classes.camera_manager == null) {
-                classes.camera_manager = findClass(null, w("/Script/Engine.PlayerCameraManager"), true);
-            }
             if (classes.wall == null) {
                 classes.wall = switch (game_id) {
                     .t7 => findClass(null, w("/Script/TekkenGame.TekkenWallActor"), true),
@@ -409,32 +480,6 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                     .t7 => findClass(null, w("/Script/TekkenGame.TekkenFloorActor"), true),
                     .t8 => findClass(null, w("/Script/Polaris.PolarisStageFloorActor"), true),
                 };
-            }
-        }
-
-        fn updateUnrealObjectAddress(
-            self: *const Self,
-            address: anytype,
-            class_maybe: ?*const game.UnrealClass,
-        ) void {
-            if (@typeInfo(@TypeOf(address)) != .pointer) {
-                @compileError(
-                    "Expecting the address to be passed by reference but got type: " ++ @typeName(@TypeOf(address)),
-                );
-            }
-            const findUnrealObjectsOfClass = self.functions.findUnrealObjectsOfClass orelse return;
-            const unrealFree = self.functions.unrealFree orelse return;
-            const class = class_maybe orelse return;
-
-            var list = game.UnrealArrayList(*game.UnrealObject).empty;
-            findUnrealObjectsOfClass(class, &list, true, .default_exclude, .{});
-            defer list.free(unrealFree);
-
-            const slice = list.asSlice();
-            if (slice.len > 0) {
-                address.address = @intFromPtr(slice[0]);
-            } else {
-                address.address = 0;
             }
         }
 
@@ -465,7 +510,7 @@ pub fn Memory(comptime game_id: build_info.Game) type {
 
         fn initPatternCache(
             allocator: std.mem.Allocator,
-            base_dir: ?*const sdk.misc.BaseDir,
+            io: std.Io,
             file_name: []const u8,
         ) !sdk.memory.PatternCache {
             const main_module = sdk.os.Module.getMain() catch |err| {
@@ -477,65 +522,47 @@ pub fn Memory(comptime game_id: build_info.Game) type {
                 return err;
             };
             var cache = sdk.memory.PatternCache.init(allocator, range);
-            if (base_dir) |dir| {
-                loadPatternCache(&cache, dir, file_name) catch |err| {
-                    sdk.misc.error_context.append("Failed to load memory pattern cache. Using empty cache.", .{});
-                    sdk.misc.error_context.logWarning(err);
-                };
-            }
+            loadPatternCache(&cache, io, file_name) catch |err| {
+                sdk.misc.error_context.append("Failed to load memory pattern cache. Using empty cache.", .{});
+                sdk.misc.error_context.logWarning(err);
+            };
             return cache;
         }
 
         fn deinitPatternCache(
             cache: *sdk.memory.PatternCache,
-            base_dir: ?*const sdk.misc.BaseDir,
+            io: std.Io,
             file_name: []const u8,
         ) void {
-            if (base_dir) |dir| {
-                savePatternCache(cache, dir, file_name) catch |err| {
-                    sdk.misc.error_context.append("Failed to save memory pattern cache.", .{});
-                    sdk.misc.error_context.logWarning(err);
-                };
-            }
+            savePatternCache(cache, io, file_name) catch |err| {
+                sdk.misc.error_context.append("Failed to save memory pattern cache.", .{});
+                sdk.misc.error_context.logWarning(err);
+            };
             cache.deinit();
         }
 
         fn loadPatternCache(
             cache: *sdk.memory.PatternCache,
-            base_dir: *const sdk.misc.BaseDir,
+            io: std.Io,
             file_name: []const u8,
         ) !void {
-            var buffer: [sdk.os.max_file_path_length]u8 = undefined;
-            const file_path = base_dir.getPath(&buffer, file_name) catch |err| {
-                sdk.misc.error_context.append("Failed to construct file path.", .{});
-                return err;
-            };
-
             const executable_timestamp = sdk.os.getExecutableTimestamp() catch |err| {
                 sdk.misc.error_context.append("Failed to get executable timestamp.", .{});
                 return err;
             };
-
-            return cache.load(file_path, executable_timestamp);
+            return cache.load(io, file_name, executable_timestamp);
         }
 
         fn savePatternCache(
             cache: *sdk.memory.PatternCache,
-            base_dir: *const sdk.misc.BaseDir,
+            io: std.Io,
             file_name: []const u8,
         ) !void {
-            var buffer: [sdk.os.max_file_path_length]u8 = undefined;
-            const file_path = base_dir.getPath(&buffer, file_name) catch |err| {
-                sdk.misc.error_context.append("Failed to construct file path.", .{});
-                return err;
-            };
-
             const executable_timestamp = sdk.os.getExecutableTimestamp() catch |err| {
                 sdk.misc.error_context.append("Failed to get executable timestamp.", .{});
                 return err;
             };
-
-            return cache.save(file_path, executable_timestamp);
+            return cache.save(io, file_name, executable_timestamp);
         }
     };
 }
@@ -633,12 +660,17 @@ fn relativeOffset(comptime Offset: type, address: anyerror!usize) !usize {
 
 fn add(comptime addition: comptime_int, address: anyerror!usize) !usize {
     const addr = try address;
-    const result = if (addition >= 0) @addWithOverflow(addr, addition) else @subWithOverflow(addr, -addition);
-    if (result[1] == 1) {
-        sdk.misc.error_context.new("Adding 0x{X} to address 0x{X} resulted in a overflow.", .{ addr, addition });
-        return error.Overflow;
+    if (addition >= 0) {
+        return std.math.add(usize, addr, addition) catch |err| {
+            sdk.misc.error_context.new("Adding 0x{X} to address 0x{X} resulted in an overflow.", .{ addition, addr });
+            return err;
+        };
+    } else {
+        return std.math.sub(usize, addr, -addition) catch |err| {
+            sdk.misc.error_context.new("Adding -0x{X} to address 0x{X} resulted in an overflow.", .{ -addition, addr });
+            return err;
+        };
     }
-    return result[0];
 }
 
 const testing = std.testing;
@@ -654,13 +686,13 @@ test "proxy should map errors to null values" {
     try testing.expectEqualSlices(?usize, &.{ 1, null, 2, null }, byte_proxy.trail.getOffsets());
 }
 
-test "pointer should return a pointer with the provided address when a address is provided" {
+test "pointer should return a pointer with the provided address when an address is provided" {
     const ptr = pointer("test", u32, 123);
     try testing.expectEqual(123, ptr.address);
 }
 
 test "pointer should return a pointer with zero address when error is provided" {
-    const ptr = pointer("test", u32, error.Testt);
+    const ptr = pointer("test", u32, error.Test);
     try testing.expectEqual(0, ptr.address);
 }
 

@@ -52,7 +52,10 @@ pub fn Capturer(comptime game_id: build_info.Game) type {
                 capturePlayer(&self.player_2_state, player_2, player_2_info, match_player_2, cancel_requirements),
             };
             const camera_manager = game_memory.camera_manager.toConstPointer();
-            const camera = captureCamera(camera_manager);
+            const cinematic_controller = game_memory.cinematic_controller.toConstPointer();
+            const original_view_info = game_memory.original_view_info.toConstPointer();
+            const source = captureSource(player_1, player_2, match, replay_mode, &game_memory.functions);
+            const camera = captureCamera(source, camera_manager, cinematic_controller, original_view_info);
             const floor_number = captureFloorNumber(player_1, player_2);
             const set_number = captureStageSetNumber(player_1, player_2);
             const walls = captureWalls(
@@ -75,7 +78,7 @@ pub fn Capturer(comptime game_id: build_info.Game) type {
                     .t8 => .t8,
                 },
                 .game_version = captureGameVersion(game_version),
-                .source = captureSource(match, replay_mode, &game_memory.functions),
+                .source = source,
                 .match_phase = captureMatchPhase(match),
                 .rounds_needed_to_win = if (ruleset) |r| r.rounds_needed_to_win else null,
                 .frames_since_round_start = captureFramesSinceRoundStart(player_1, player_2),
@@ -105,10 +108,15 @@ pub fn Capturer(comptime game_id: build_info.Game) type {
         }
 
         pub fn captureSource(
+            player_1: ?*const GamePlayer,
+            player_2: ?*const GamePlayer,
             match_maybe: ?*const game.Match(game_id),
             replay_mode_maybe: ?*const game.ReplayMode,
             functions: *const game.Memory(game_id).Functions,
         ) ?model.Source {
+            if (player_1 == null and player_2 == null) {
+                return null; // Not in a match.
+            }
             if (match_maybe) |match| {
                 switch (match.phase) {
                     .practice_mode, .move_showcase => return .practice,
@@ -214,17 +222,53 @@ pub fn Capturer(comptime game_id: build_info.Game) type {
             }
         }
 
-        fn captureCamera(camera_manager: ?*const game.CameraManager(game_id)) ?model.Camera {
-            const camera = if (camera_manager) |c| c else return null;
-            const horizontal_fov = camera.horizontal_fov.convert();
-            const position = camera.position.convert();
-            const rotation = camera.rotation.convert();
+        fn captureCamera(
+            source: ?model.Source,
+            camera_manager: ?*const game.CameraManager(game_id),
+            cinematic_controller: ?*const game.CinematicController,
+            original_view_info: ?*const game.ViewInfo(game_id),
+        ) ?model.Camera {
+            if (source == .replay_loading) {
+                return captureCameraManagerCamera(camera_manager);
+            }
+            const is_cinematic_active = block: {
+                const controller = cinematic_controller orelse break :block false;
+                break :block controller.selected_cinematic_id != 0 or controller.is_blending_back != .false;
+            };
+            return switch (is_cinematic_active) {
+                false => captureCameraManagerCamera(camera_manager),
+                true => captureViewInfoCamera(original_view_info),
+            };
+        }
+
+        fn captureViewInfoCamera(view_info_maybe: ?*const game.ViewInfo(game_id)) ?model.Camera {
+            const view_info = view_info_maybe orelse return null;
+            const rotation = view_info.rotation.convert();
             return .{
-                .position = position,
+                .position = view_info.position.convert(),
                 .pitch = rotation.x(),
                 .yaw = rotation.y(),
                 .roll = rotation.z(),
-                .horizontal_fov = horizontal_fov,
+                .horizontal_fov = view_info.horizontal_fov.convert(),
+            };
+        }
+
+        fn captureCameraManagerCamera(camera_manager_maybe: ?*const game.CameraManager(game_id)) ?model.Camera {
+            const camera_manager = camera_manager_maybe orelse return null;
+            const modes = &camera_manager.modes;
+            if (camera_manager.active_mode_index >= modes.len) {
+                return null;
+            }
+            const mode = modes[camera_manager.active_mode_index].toConstPointer() orelse return null;
+            const position = mode.view.position.convert();
+            const look_at = mode.view.look_at.convert();
+            const direction = look_at.subtract(position);
+            return .{
+                .position = position,
+                .pitch = std.math.atan2(direction.z(), direction.swizzle("xy").length()),
+                .yaw = std.math.atan2(direction.y(), direction.x()),
+                .roll = mode.view.roll.convert(),
+                .horizontal_fov = mode.view.horizontal_fov.convert(),
             };
         }
 
@@ -529,7 +573,7 @@ pub fn Capturer(comptime game_id: build_info.Game) type {
         }
 
         fn captureInputFromDevice(player: *const GamePlayer) ?model.Input {
-            const input_side: game.PlayerSide = player.input_side;
+            const input_side: game.InputSide = player.input_side;
             const input: game.Input(game_id) = player.input;
             return .{
                 .forward = switch (input_side) {
@@ -560,7 +604,7 @@ pub fn Capturer(comptime game_id: build_info.Game) type {
         }
 
         fn captureInputFromGameLogic(player: *const GamePlayer) ?model.Input {
-            const input_side: game.PlayerSide = player.input_side;
+            const input_side: game.InputSide = player.input_side;
             const directional_input: game.DirectionalInput.Direction = player.directional_input.down;
             const attack_input: game.AttackInput(game_id).Buttons = player.attack_input.down;
             return .{
@@ -952,7 +996,7 @@ pub fn Capturer(comptime game_id: build_info.Game) type {
                 edge_1: ?sdk.math.Vec2 = null,
                 edge_2_index: ?u8 = null,
             };
-            var breakable_walls = [1]BreakableWall{.{}} ** game.Memory(game_id).max_walls;
+            var breakable_walls: [game.Memory(game_id).max_walls]BreakableWall = @splat(.{});
             var result = model.Walls.empty;
             var hit_negative_x = false;
             var hit_negative_y = false;
@@ -1237,7 +1281,8 @@ test "should capture game correctly" {
 test "should capture game version correctly" {
     const makeVersion = struct {
         fn call(comptime str: []const u8) game.Version(.t8) {
-            return (str ++ ([1]u8{0} ** (@sizeOf(game.Version(.t8)) - str.len))).*;
+            const padding: [@sizeOf(game.Version(.t8)) - str.len]u8 = @splat(0);
+            return (str ++ padding).*;
         }
     }.call;
     const gm = game.Memory(.t8).testingInit;
@@ -1292,6 +1337,8 @@ test "should capture source correctly in T7" {
     try testing.expectEqual(
         null,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = null,
             .replay_mode = null,
         })).source,
@@ -1299,6 +1346,8 @@ test "should capture source correctly in T7" {
     try testing.expectEqual(
         .practice,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = &.{ .phase = .practice_mode },
             .replay_mode = null,
         })).source,
@@ -1306,6 +1355,8 @@ test "should capture source correctly in T7" {
     try testing.expectEqual(
         .practice,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = &.{ .phase = .move_showcase },
             .replay_mode = null,
         })).source,
@@ -1313,6 +1364,8 @@ test "should capture source correctly in T7" {
     try testing.expectEqual(
         .practice,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = &.{ .phase = .practice_mode },
             .replay_mode = &.loading,
         })).source,
@@ -1320,6 +1373,8 @@ test "should capture source correctly in T7" {
     try testing.expectEqual(
         .replay_loading,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = null,
             .replay_mode = &.loading,
         })).source,
@@ -1327,6 +1382,8 @@ test "should capture source correctly in T7" {
     try testing.expectEqual(
         .replay_loading,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = &.{ .phase = .mid_round },
             .replay_mode = &.loading,
         })).source,
@@ -1334,6 +1391,8 @@ test "should capture source correctly in T7" {
     try testing.expectEqual(
         .replay_playback,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = null,
             .replay_mode = &.playback,
         })).source,
@@ -1341,6 +1400,8 @@ test "should capture source correctly in T7" {
     try testing.expectEqual(
         .replay_playback,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = &.{ .phase = .mid_round },
             .replay_mode = &.playback,
         })).source,
@@ -1348,7 +1409,36 @@ test "should capture source correctly in T7" {
     try testing.expectEqual(
         .live_game,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = &.{ .phase = .mid_round },
+            .replay_mode = null,
+        })).source,
+    );
+    try testing.expectEqual(
+        null,
+        capturer.captureFrame(&gm(.{
+            .player_1 = null,
+            .player_2 = null,
+            .match = &.{ .phase = .practice_mode },
+            .replay_mode = &.playback,
+        })).source,
+    );
+    try testing.expectEqual(
+        .practice,
+        capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = null,
+            .match = &.{ .phase = .practice_mode },
+            .replay_mode = null,
+        })).source,
+    );
+    try testing.expectEqual(
+        .practice,
+        capturer.captureFrame(&gm(.{
+            .player_1 = null,
+            .player_2 = &.{},
+            .match = &.{ .phase = .practice_mode },
             .replay_mode = null,
         })).source,
     );
@@ -1374,6 +1464,8 @@ test "should capture source correctly in T8" {
     try testing.expectEqual(
         null,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = null,
             .functions = .{ .isReplay = null },
         })).source,
@@ -1381,6 +1473,8 @@ test "should capture source correctly in T8" {
     try testing.expectEqual(
         null,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = null,
             .functions = .{ .isReplay = Functions.notReplay },
         })).source,
@@ -1388,6 +1482,8 @@ test "should capture source correctly in T8" {
     try testing.expectEqual(
         null,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = &.{ .phase = .mid_round },
             .functions = .{ .isReplay = null },
         })).source,
@@ -1395,6 +1491,8 @@ test "should capture source correctly in T8" {
     try testing.expectEqual(
         .practice,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = &.{ .phase = .practice_mode },
             .functions = .{ .isReplay = null },
         })).source,
@@ -1402,6 +1500,8 @@ test "should capture source correctly in T8" {
     try testing.expectEqual(
         .practice,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = &.{ .phase = .practice_mode },
             .functions = .{ .isReplay = Functions.replayLoading },
         })).source,
@@ -1409,6 +1509,8 @@ test "should capture source correctly in T8" {
     try testing.expectEqual(
         .practice,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = &.{ .phase = .move_showcase },
             .functions = .{ .isReplay = null },
         })).source,
@@ -1416,6 +1518,8 @@ test "should capture source correctly in T8" {
     try testing.expectEqual(
         .practice,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = &.{ .phase = .move_showcase },
             .functions = .{ .isReplay = Functions.replayPlayback },
         })).source,
@@ -1423,6 +1527,8 @@ test "should capture source correctly in T8" {
     try testing.expectEqual(
         .live_game,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = &.{ .phase = .mid_round },
             .functions = .{ .isReplay = Functions.notReplay },
         })).source,
@@ -1430,6 +1536,8 @@ test "should capture source correctly in T8" {
     try testing.expectEqual(
         .replay_loading,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
             .match = &.{ .phase = .mid_round },
             .functions = .{ .isReplay = Functions.replayLoading },
         })).source,
@@ -1437,6 +1545,17 @@ test "should capture source correctly in T8" {
     try testing.expectEqual(
         .replay_playback,
         capturer.captureFrame(&gm(.{
+            .player_1 = &.{},
+            .player_2 = &.{},
+            .match = &.{ .phase = .mid_round },
+            .functions = .{ .isReplay = Functions.replayPlayback },
+        })).source,
+    );
+    try testing.expectEqual(
+        null,
+        capturer.captureFrame(&gm(.{
+            .player_1 = null,
+            .player_2 = null,
             .match = &.{ .phase = .mid_round },
             .functions = .{ .isReplay = Functions.replayPlayback },
         })).source,
@@ -1613,35 +1732,141 @@ test "should capture floor Z correctly" {
     );
 }
 
-test "should capture camera correctly" {
+test "should capture camera from the active camera mode" {
     const gm = game.Memory(.t8).testingInit;
     var capturer = Capturer(.t8){};
-    try testing.expectEqual(
-        null,
-        capturer.captureFrame(&gm(.{
-            .camera_manager = null,
-        })).camera,
-    );
-    try testing.expectEqual(
-        model.Camera{
-            .position = .fromArray(.{ 1, 2, 3 }),
-            .pitch = 0.25 * std.math.pi,
-            .yaw = 0.5 * std.math.pi,
-            .roll = 0.75 * std.math.pi,
-            .horizontal_fov = 1.0 / 3.0 * std.math.pi,
+    const inactive_mode = game.CameraMode{ .view = .{
+        .position = .fromConverted(.fromArray(.{ 10, 20, 30 })),
+        .look_at = .fromConverted(.fromArray(.{ 40, 50, 60 })),
+        .horizontal_fov = .fromConverted(0.5 * std.math.pi),
+        .roll = .fromConverted(1),
+    } };
+    const active_mode = game.CameraMode{ .view = .{
+        .position = .fromConverted(.fromArray(.{ 1, 2, 3 })),
+        .look_at = .fromConverted(.fromArray(.{ 1, 3, 4 })),
+        .horizontal_fov = .fromConverted(1.0 / 3.0 * std.math.pi),
+        .roll = .fromConverted(0.5),
+    } };
+    var modes: [22]sdk.memory.Pointer(game.CameraMode) = @splat(.fromPointer(null));
+    modes[0] = .fromPointer(&inactive_mode);
+    modes[2] = .fromPointer(&active_mode);
+    const frame = capturer.captureFrame(&gm(.{
+        .camera_manager = &.{ .active_mode_index = 2, .modes = modes },
+    }));
+    try testing.expect(frame.camera != null);
+    try testing.expectEqual(1, frame.camera.?.position.x());
+    try testing.expectEqual(2, frame.camera.?.position.y());
+    try testing.expectEqual(3, frame.camera.?.position.z());
+    try testing.expectEqual(0.25 * std.math.pi, frame.camera.?.pitch);
+    try testing.expectEqual(0.5 * std.math.pi, frame.camera.?.yaw);
+    try testing.expectEqual(0.5, frame.camera.?.roll);
+    try testing.expectEqual(1.0 / 3.0 * std.math.pi, frame.camera.?.horizontal_fov);
+}
+
+test "should capture no camera when camera manager or active camera mode is missing" {
+    const gm = game.Memory(.t8).testingInit;
+    var capturer = Capturer(.t8){};
+    const mode = game.CameraMode{};
+    var modes: [22]sdk.memory.Pointer(game.CameraMode) = @splat(.fromPointer(null));
+    modes[0] = .fromPointer(&mode);
+    try testing.expectEqual(null, capturer.captureFrame(&gm(.{
+        .camera_manager = null,
+    })).camera);
+    try testing.expectEqual(null, capturer.captureFrame(&gm(.{
+        .camera_manager = &.{ .active_mode_index = 1, .modes = modes },
+    })).camera);
+    try testing.expectEqual(null, capturer.captureFrame(&gm(.{
+        .camera_manager = &.{ .active_mode_index = 22, .modes = modes },
+    })).camera);
+}
+
+test "should capture camera from original view info while a cinematic is active" {
+    const gm = game.Memory(.t8).testingInit;
+    var capturer = Capturer(.t8){};
+    const mode = game.CameraMode{ .view = .{
+        .position = .fromConverted(.fromArray(.{ 1, 2, 3 })),
+        .look_at = .fromConverted(.fromArray(.{ 1, 3, 4 })),
+        .horizontal_fov = .fromConverted(1.0 / 3.0 * std.math.pi),
+        .roll = .fromConverted(0.5),
+    } };
+    var modes: [22]sdk.memory.Pointer(game.CameraMode) = @splat(.fromPointer(null));
+    modes[0] = .fromPointer(&mode);
+    const camera_manager = game.CameraManager(.t8){ .active_mode_index = 0, .modes = modes };
+    const original_view_info = game.ViewInfo(.t8){
+        .position = .fromConverted(.fromArray(.{ 10, 20, 30 })),
+        .rotation = .fromConverted(.fromArray(.{ 0.1, 0.2, 0.3 })),
+        .horizontal_fov = .fromConverted(0.5 * std.math.pi),
+    };
+    const view_info_camera = model.Camera{
+        .position = .fromArray(.{ 10, 20, 30 }),
+        .pitch = 0.1,
+        .yaw = 0.2,
+        .roll = 0.3,
+        .horizontal_fov = 0.5 * std.math.pi,
+    };
+
+    const frame_1 = capturer.captureFrame(&gm(.{
+        .cinematic_controller = &.{ .selected_cinematic_id = 0x29, .is_blending_back = .false },
+        .camera_manager = &camera_manager,
+        .original_view_info = &original_view_info,
+    }));
+    try testing.expectEqual(view_info_camera, frame_1.camera);
+
+    const frame_2 = capturer.captureFrame(&gm(.{
+        .cinematic_controller = &.{ .selected_cinematic_id = 0, .is_blending_back = .true },
+        .camera_manager = &camera_manager,
+        .original_view_info = &original_view_info,
+    }));
+    try testing.expectEqual(view_info_camera, frame_2.camera);
+
+    const frame_3 = capturer.captureFrame(&gm(.{
+        .cinematic_controller = &.{ .selected_cinematic_id = 0, .is_blending_back = .false },
+        .camera_manager = &camera_manager,
+        .original_view_info = &original_view_info,
+    }));
+    try testing.expect(frame_3.camera != null);
+    try testing.expectEqual(1, frame_3.camera.?.position.x());
+    try testing.expectEqual(2, frame_3.camera.?.position.y());
+    try testing.expectEqual(3, frame_3.camera.?.position.z());
+    try testing.expectEqual(0.5, frame_3.camera.?.roll);
+}
+
+test "should capture camera from the camera manager while replay is loading even if a cinematic is active" {
+    const Functions = struct {
+        fn replayLoading(is_replay: *bool, is_pre_calculated: *bool) callconv(.c) void {
+            is_replay.* = true;
+            is_pre_calculated.* = false;
+        }
+    };
+    const gm = game.Memory(.t8).testingInit;
+    var capturer = Capturer(.t8){};
+    const mode = game.CameraMode{ .view = .{
+        .position = .fromConverted(.fromArray(.{ 1, 2, 3 })),
+        .look_at = .fromConverted(.fromArray(.{ 1, 3, 4 })),
+        .horizontal_fov = .fromConverted(1.0 / 3.0 * std.math.pi),
+        .roll = .fromConverted(0.5),
+    } };
+    var modes: [22]sdk.memory.Pointer(game.CameraMode) = @splat(.fromPointer(null));
+    modes[0] = .fromPointer(&mode);
+    const frame = capturer.captureFrame(&gm(.{
+        .player_1 = &.{},
+        .player_2 = &.{},
+        .match = &.{ .phase = .mid_round },
+        .functions = .{ .isReplay = Functions.replayLoading },
+        .cinematic_controller = &.{ .selected_cinematic_id = 0x29, .is_blending_back = .true },
+        .camera_manager = &.{ .active_mode_index = 0, .modes = modes },
+        .original_view_info = &.{
+            .position = .fromConverted(.fromArray(.{ 10, 20, 30 })),
+            .rotation = .fromConverted(.fromArray(.{ 0.1, 0.2, 0.3 })),
+            .horizontal_fov = .fromConverted(0.5 * std.math.pi),
         },
-        capturer.captureFrame(&gm(.{
-            .camera_manager = &.{
-                .horizontal_fov = .fromConverted(1.0 / 3.0 * std.math.pi),
-                .position = .fromConverted(.fromArray(.{ 1, 2, 3 })),
-                .rotation = .fromConverted(.fromArray(.{
-                    0.25 * std.math.pi,
-                    0.5 * std.math.pi,
-                    0.75 * std.math.pi,
-                })),
-            },
-        })).camera,
-    );
+    }));
+    try testing.expectEqual(.replay_loading, frame.source);
+    try testing.expect(frame.camera != null);
+    try testing.expectEqual(1, frame.camera.?.position.x());
+    try testing.expectEqual(2, frame.camera.?.position.y());
+    try testing.expectEqual(3, frame.camera.?.position.z());
+    try testing.expectEqual(0.5, frame.camera.?.roll);
 }
 
 test "should capture left player id correctly" {
@@ -1650,8 +1875,8 @@ test "should capture left player id correctly" {
     try testing.expectEqual(
         .player_1,
         capturer.captureFrame(&gm(.{
-            .player_1 = &.{ .input_side = @enumFromInt(2) },
-            .player_2 = &.{ .input_side = @enumFromInt(2) },
+            .player_1 = &.{ .input_side = @fromBackingInt(2) },
+            .player_2 = &.{ .input_side = @fromBackingInt(2) },
             .main_player_info = &.{ .player_id = .player_1 },
             .secondary_player_info = &.{ .player_id = .player_2 },
         })).left_player_id,
@@ -1660,7 +1885,7 @@ test "should capture left player id correctly" {
         .player_1,
         capturer.captureFrame(&gm(.{
             .player_1 = &.{ .input_side = .left },
-            .player_2 = &.{ .input_side = @enumFromInt(2) },
+            .player_2 = &.{ .input_side = @fromBackingInt(2) },
             .main_player_info = &.{ .player_id = .player_1 },
             .secondary_player_info = &.{ .player_id = .player_2 },
         })).left_player_id,
@@ -1669,7 +1894,7 @@ test "should capture left player id correctly" {
         .player_2,
         capturer.captureFrame(&gm(.{
             .player_1 = &.{ .input_side = .right },
-            .player_2 = &.{ .input_side = @enumFromInt(2) },
+            .player_2 = &.{ .input_side = @fromBackingInt(2) },
             .main_player_info = &.{ .player_id = .player_1 },
             .secondary_player_info = &.{ .player_id = .player_2 },
         })).left_player_id,
@@ -1677,7 +1902,7 @@ test "should capture left player id correctly" {
     try testing.expectEqual(
         .player_2,
         capturer.captureFrame(&gm(.{
-            .player_1 = &.{ .input_side = @enumFromInt(2) },
+            .player_1 = &.{ .input_side = @fromBackingInt(2) },
             .player_2 = &.{ .input_side = .left },
             .main_player_info = &.{ .player_id = .player_2 },
             .secondary_player_info = &.{ .player_id = .player_1 },
@@ -1686,7 +1911,7 @@ test "should capture left player id correctly" {
     try testing.expectEqual(
         .player_1,
         capturer.captureFrame(&gm(.{
-            .player_1 = &.{ .input_side = @enumFromInt(2) },
+            .player_1 = &.{ .input_side = @fromBackingInt(2) },
             .player_2 = &.{ .input_side = .right },
             .main_player_info = &.{ .player_id = .player_2 },
             .secondary_player_info = &.{ .player_id = .player_1 },
@@ -1751,7 +1976,8 @@ test "should capture main player id correctly" {
 test "should capture player name correctly" {
     const makePlayerName = struct {
         fn call(comptime name: []const u8) game.PlayerName {
-            return (name ++ ([1]u8{0} ** (@sizeOf(game.PlayerName) - name.len))).*;
+            const padding: [@sizeOf(game.PlayerName) - name.len]u8 = @splat(0);
+            return (name ++ padding).*;
         }
     }.call;
     const gm = game.Memory(.t8).testingInit;
@@ -2198,7 +2424,7 @@ test "should capture throw escape correctly" {
             .throw_escape_flags = .{ .escape_success = false },
         },
         .player_2 = &.{
-            .correct_throw_escape_input = @enumFromInt(0),
+            .correct_throw_escape_input = @fromBackingInt(0),
             .throw_escape_flags = .{ .escape_success = false },
         },
         .cancel_requirements = &.{
@@ -2225,7 +2451,7 @@ test "should capture can move correctly" {
     }));
     const frame_2 = capturer.captureFrame(&gm(.{
         .player_1 = null,
-        .player_2 = &.{ .can_move = @enumFromInt(2) },
+        .player_2 = &.{ .can_move = @fromBackingInt(2) },
     }));
     try testing.expectEqual(false, frame_1.getPlayerById(.player_1).can_move);
     try testing.expectEqual(true, frame_1.getPlayerById(.player_2).can_move);
@@ -2546,7 +2772,7 @@ test "should capture in special style correctly" {
     }));
     const frame_2 = capturer.captureFrame(&gm(.{
         .player_1 = null,
-        .player_2 = &.{ .in_special_style = @enumFromInt(2) },
+        .player_2 = &.{ .in_special_style = @fromBackingInt(2) },
     }));
     try testing.expectEqual(false, frame_1.getPlayerById(.player_1).in_special_style);
     try testing.expectEqual(true, frame_1.getPlayerById(.player_2).in_special_style);

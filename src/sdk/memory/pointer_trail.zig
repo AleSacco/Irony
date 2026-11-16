@@ -15,7 +15,7 @@ pub const PointerTrail = struct {
         }
         if (array.len > max_len) {
             @compileError(std.fmt.comptimePrint(
-                "The provided array with length {} is larger then maximum pointer trail length: {}",
+                "The provided array with length {} is larger than maximum pointer trail length: {}",
                 .{ array.len, max_len },
             ));
         }
@@ -38,12 +38,7 @@ pub const PointerTrail = struct {
         var current_address: usize = 0;
         for (offsets, 0..) |optional_offset, i| {
             const offset = optional_offset orelse return null;
-            const result = @addWithOverflow(current_address, offset);
-            const offset_address = result[0];
-            const overflow = result[1];
-            if (overflow == 1) {
-                return null;
-            }
+            const offset_address = std.math.add(usize, current_address, offset) catch return null;
             current_address = offset_address;
             if (i == offsets.len - 1) {
                 break;
@@ -64,7 +59,7 @@ pub const PointerTrail = struct {
 const testing = std.testing;
 
 test "resolve should return the memory address that the pointer trail resolves to when the trail is resolvable" {
-    const Struct = packed struct { field_1: i32, field_2: i32 };
+    const Struct = extern struct { field_1: i32, field_2: i32 };
     const field_1_offset = @offsetOf(Struct, "field_1");
     const field_2_offset = @offsetOf(Struct, "field_2");
 
@@ -87,7 +82,7 @@ test "resolve should return the memory address that the pointer trail resolves t
 }
 
 test "resolve should return null when the pointer trail is incomplete or not resolvable" {
-    const Struct = packed struct { field_1: i32, field_2: i32 };
+    const Struct = extern struct { field_1: i32, field_2: i32 };
     const field_1_offset = @offsetOf(Struct, "field_1");
     const field_2_offset = @offsetOf(Struct, "field_2");
 

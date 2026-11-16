@@ -5,9 +5,6 @@ const builtin = @import("builtin");
 // declaratively construct a build graph that will be executed by an external
 // runner.
 pub fn build(b: *std.Build) void {
-    // Use system Wine installation to run cross compiled Windows build artifacts.
-    b.enable_wine = true;
-
     // Standard target options allows the person running `zig build` to choose what target to build for.
     // Here we restrict the standard options to only allow building for 64-bit Windows, and make that the default target.
     const target = b.standardTargetOptions(.{
@@ -30,6 +27,7 @@ pub fn build(b: *std.Build) void {
 
     // Dependencies:
     const win32 = zigwin32Dependency(b);
+    const win_io = winIoDependency(b);
     const lib_c_time = libCTimeDependency(b, target, optimize);
     const minhook = minhookDependency(b, target, optimize);
     const imgui = imguiDependency(b, target, optimize, false);
@@ -49,6 +47,7 @@ pub fn build(b: *std.Build) void {
     });
     dll_t7.root_module.addImport("build_info", build_info_t7);
     dll_t7.root_module.addImport("win32", win32);
+    dll_t7.root_module.addImport("win_io", win_io);
     dll_t7.root_module.addImport("lib_c_time", lib_c_time);
     dll_t7.root_module.addImport("minhook", minhook);
     dll_t7.root_module.linkLibrary(imgui.library);
@@ -72,6 +71,7 @@ pub fn build(b: *std.Build) void {
     });
     dll_t8.root_module.addImport("build_info", build_info_t8);
     dll_t8.root_module.addImport("win32", win32);
+    dll_t8.root_module.addImport("win_io", win_io);
     dll_t8.root_module.addImport("lib_c_time", lib_c_time);
     dll_t8.root_module.addImport("minhook", minhook);
     dll_t8.root_module.linkLibrary(imgui.library);
@@ -101,7 +101,7 @@ pub fn build(b: *std.Build) void {
     const run_command = b.addRunArtifact(injector);
 
     // Make sure that the working directory when the program is ran is the same one where the executable is located.
-    run_command.setCwd(std.Build.LazyPath{ .cwd_relative = "./zig-out/bin" });
+    run_command.setCwd(.{ .relative = .{ .base = .install_bin } });
 
     // Stop Wine from spamming debug messages in the console when running the application.
     run_command.setEnvironmentVariable("WINEDEBUG", "-all");
@@ -113,9 +113,7 @@ pub fn build(b: *std.Build) void {
 
     // This allows the user to pass arguments to the application in the build command itself, like this:
     // `zig build run -- arg1 arg2 etc`
-    if (b.args) |args| {
-        run_command.addArgs(args);
-    }
+    run_command.addPassthruArgs();
 
     // This creates a build step. It will be visible in the `zig build --help` menu, and can be selected like this:
     // `zig build run`
@@ -135,6 +133,7 @@ pub fn build(b: *std.Build) void {
     tests.root_module.addImport("build_info", build_info_t8);
     tests.root_module.addImport("lib_c_time", lib_c_time);
     tests.root_module.addImport("win32", win32);
+    tests.root_module.addImport("win_io", win_io);
     tests.root_module.addImport("minhook", minhook);
     tests.root_module.linkLibrary(imgui_te.library);
     tests.root_module.addImport("imgui", imgui_te.module);
@@ -158,10 +157,14 @@ pub fn build(b: *std.Build) void {
     // The next line below will establish such a dependency.
     const test_command = b.addRunArtifact(tests);
 
+    // Make sure that the working directory when the tests are ran is test_assets.
+    test_command.setCwd(b.path("./test_assets"));
+
     // Stop Wine from spamming debug messages in the console when running tests.
     test_command.setEnvironmentVariable("WINEDEBUG", "-all");
     test_command.setEnvironmentVariable("DXVK_LOG_LEVEL", "none");
     test_command.setEnvironmentVariable("VKD3D_DEBUG", "none");
+    test_command.setEnvironmentVariable("EGL_LOG_LEVEL", "fatal");
     // Stop vkd3d from caching shaders in a file when running tests.
     test_command.setEnvironmentVariable("VKD3D_SHADER_CACHE_PATH", "0");
 
@@ -179,6 +182,11 @@ const ModuleAndLibrary = struct {
 // ZIG dependency: zigwin32
 fn zigwin32Dependency(b: *std.Build) *std.Build.Module {
     return b.dependency("zigwin32", .{}).module("win32");
+}
+
+// ZIG dependency: win_io
+fn winIoDependency(b: *std.Build) *std.Build.Module {
+    return b.dependency("win_io", .{}).module("win_io");
 }
 
 // C dependency: lib_c_time ("time.h" from C)
@@ -264,19 +272,38 @@ fn imguiDependency(
         \\    return std::string(buffer);
         \\}
     );
-    const patched_1 = patch_round_number.captureStdOut();
+    const imgui_file_dialog_patched_1 = patch_round_number.captureStdOut(.{});
 
     const patch_file_path = b.addRunArtifact(find_replace_patcher);
-    patch_file_path.addFileArg(patched_1);
+    patch_file_path.addFileArg(imgui_file_dialog_patched_1);
     patch_file_path.addArg("fs::path fpath(vFilePathName);");
     patch_file_path.addArg("fs::path fpath = fs::u8path(vFilePathName);");
-    const patched_2 = patch_file_path.captureStdOut();
+    const imgui_file_dialog_patched_2 = patch_file_path.captureStdOut(.{});
+
+    const patch_file_name_focus = b.addRunArtifact(find_replace_patcher);
+    patch_file_name_focus.addFileArg(imgui_file_dialog_patched_2);
+    patch_file_name_focus.addArg(
+        \\if (ImGui::InputText("##FileName"
+    );
+    patch_file_name_focus.addArg(
+        \\if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        \\if (ImGui::InputText("##FileName"
+    );
+    const imgui_file_dialog_patched_3 = patch_file_name_focus.captureStdOut(.{});
+
+    const patch_win32_key_event = b.addRunArtifact(find_replace_patcher);
+    patch_win32_key_event.addFileArg(b.dependency("imgui", .{}).path("backends/imgui_impl_win32.cpp"));
+    const key_event_declaration = "ImGuiKey ImGui_ImplWin32_KeyEventToImGuiKey(WPARAM wParam, LPARAM lParam);";
+    patch_win32_key_event.addArg(key_event_declaration);
+    patch_win32_key_event.addArg("IMGUI_IMPL_API " ++ key_event_declaration);
+    const win32_backend_patched = patch_win32_key_event.captureStdOut(.{});
 
     const files = b.addWriteFiles();
     _ = files.addCopyDirectory(b.dependency("cimgui", .{}).path("."), ".", .{});
     _ = files.addCopyDirectory(b.dependency("imgui", .{}).path("."), "./imgui", .{});
+    _ = files.addCopyFile(win32_backend_patched, "./imgui/backends/imgui_impl_win32_patched.cpp");
     _ = files.addCopyDirectory(b.dependency("imgui_file_dialog", .{}).path("."), "./imgui_file_dialog", .{});
-    _ = files.addCopyFile(patched_2, "./imgui_file_dialog/ImGuiFileDialog_patched.cpp");
+    _ = files.addCopyFile(imgui_file_dialog_patched_3, "./imgui_file_dialog/ImGuiFileDialog_patched.cpp");
     if (use_test_engine) {
         _ = files.addCopyDirectory(
             b.dependency("imgui_test_engine", .{}).path("./imgui_test_engine"),
@@ -321,7 +348,7 @@ fn imguiDependency(
         "./imgui/imgui_widgets.cpp",
         "./imgui/backends/imgui_impl_dx11.cpp",
         "./imgui/backends/imgui_impl_dx12.cpp",
-        "./imgui/backends/imgui_impl_win32.cpp",
+        "./imgui/backends/imgui_impl_win32_patched.cpp",
         "./imgui_file_dialog/ImGuiFileDialog_patched.cpp",
     } });
     if (use_test_engine) {

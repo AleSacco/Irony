@@ -32,20 +32,20 @@ pub fn Shader(Vertex: type, Index: type, Constants: type) type {
             const device = context.device;
 
             const vertex_blob = compile(config.source_code, "vs_main", "vs_4_0") catch |err| {
-                misc.error_context.append("Failed to compile vertex_shader.", .{});
+                misc.error_context.append("Failed to compile vertex shader.", .{});
                 return err;
             };
             defer _ = vertex_blob.IUnknown.Release();
 
             const pixel_blob = compile(config.source_code, "ps_main", "ps_4_0") catch |err| {
-                misc.error_context.append("Failed to compile.", .{});
+                misc.error_context.append("Failed to compile pixel shader.", .{});
                 return err;
             };
             defer _ = pixel_blob.IUnknown.Release();
 
             const geometry_blob = switch (config.use_geometry_shader) {
                 true => compile(config.source_code, "gs_main", "gs_4_0") catch |err| {
-                    misc.error_context.append("Failed to compile.", .{});
+                    misc.error_context.append("Failed to compile geometry shader.", .{});
                     return err;
                 },
                 false => null,
@@ -63,7 +63,7 @@ pub fn Shader(Vertex: type, Index: type, Constants: type) type {
             );
             if (dx11.Error.from(reflect_result)) |err| {
                 misc.error_context.new("{f}", .{err});
-                misc.error_context.append("ID3DReflect returned a failure value.", .{});
+                misc.error_context.append("D3DReflect returned a failure value.", .{});
                 return error.Dx11Error;
             }
             defer _ = reflection.IUnknown.Release();
@@ -229,7 +229,7 @@ pub fn Shader(Vertex: type, Index: type, Constants: type) type {
                 @compileError("This function is not defined for indices of type void.");
             }
             setBufferData(Index, context, &self.index_buffer, indices, .index) catch |err| {
-                misc.error_context.append("Failed to set vertex buffer data.", .{});
+                misc.error_context.append("Failed to set index buffer data.", .{});
                 return err;
             };
             self.index_count = @intCast(indices.len);
@@ -240,7 +240,7 @@ pub fn Shader(Vertex: type, Index: type, Constants: type) type {
                 @compileError("This function is not defined for constants of type void.");
             }
             setBufferData(Constants, context, &self.constant_buffer, constants[0..1], .constant) catch |err| {
-                misc.error_context.append("Failed to set vertex buffer data.", .{});
+                misc.error_context.append("Failed to set constant buffer data.", .{});
                 return err;
             };
         }
@@ -316,7 +316,7 @@ pub fn Shader(Vertex: type, Index: type, Constants: type) type {
             const device_context = context.device_context;
 
             const len = std.math.cast(u32, data.len) orelse {
-                misc.error_context.new("Overflow while casting vertices length.", .{});
+                misc.error_context.new("Overflow while casting data length.", .{});
                 return error.Overflow;
             };
             const bytes_needed = std.math.mul(u32, len, @sizeOf(Element)) catch |err| {
@@ -448,18 +448,18 @@ inline fn getInputLayoutDesc(comptime Vertex: type) []const w32.D3D11_INPUT_ELEM
                 .{ @typeName(Vertex), @sizeOf(Vertex) },
             ));
         }
-        var result: [info.fields.len]w32.D3D11_INPUT_ELEMENT_DESC = undefined;
+        var result: [info.field_names.len]w32.D3D11_INPUT_ELEMENT_DESC = undefined;
         var len: usize = 0;
-        for (info.fields) |*field| {
-            if (field.name.len == 0 or field.name[0] == '_') {
+        for (info.field_names, info.field_types) |field_name, Field| {
+            if (field_name.len == 0 or field_name[0] == '_') {
                 continue;
             }
             result[len] = .{
-                .SemanticName = field.name,
+                .SemanticName = field_name,
                 .SemanticIndex = 0,
-                .Format = getInputParameterInfo(field.type).type_format,
+                .Format = getInputParameterInfo(Field).type_format,
                 .InputSlot = 0,
-                .AlignedByteOffset = @offsetOf(Vertex, field.name),
+                .AlignedByteOffset = @offsetOf(Vertex, field_name),
                 .InputSlotClass = .VERTEX_DATA,
                 .InstanceDataStepRate = 0,
             };
@@ -507,9 +507,9 @@ fn checkVertexLayout(comptime Vertex: type, reflection: *const w32.ID3D11ShaderR
         const gpu_name = std.mem.sliceTo(gpu_name_start, 0);
         errdefer misc.error_context.append("Check failed for GPU input parameter: {s}", .{gpu_name});
 
-        inline for (info.fields) |*cpu_field| {
-            if (std.mem.eql(u8, cpu_field.name, gpu_name)) {
-                const cpu_parameter = getInputParameterInfo(cpu_field.type);
+        inline for (info.field_names, info.field_types) |cpu_name, CpuType| {
+            if (std.mem.eql(u8, cpu_name, gpu_name)) {
+                const cpu_parameter = getInputParameterInfo(CpuType);
                 if (gpu_parameter.ComponentType != cpu_parameter.component_type) {
                     misc.error_context.new(
                         "GPU component type {s} does not match the CPU component type: {s}",
@@ -534,8 +534,8 @@ fn checkVertexLayout(comptime Vertex: type, reflection: *const w32.ID3D11ShaderR
 
     const number_of_cpu_fields = comptime block: {
         var result: usize = 0;
-        for (info.fields) |*field| {
-            if (field.name.len != 0 and field.name[0] != '_') {
+        for (info.field_names) |field_name| {
+            if (field_name.len != 0 and field_name[0] != '_') {
                 result += 1;
             }
         }
@@ -551,8 +551,8 @@ fn checkVertexLayout(comptime Vertex: type, reflection: *const w32.ID3D11ShaderR
 }
 
 fn checkConstantsLayout(comptime Constants: type, reflection: *const w32.ID3D11ShaderReflection) !void {
-    const cpu_fields: []const std.builtin.Type.StructField = switch (@typeInfo(Constants)) {
-        .void => &.{},
+	const cpu_names: []const [:0]const u8, const cpu_types: []const type = switch (@typeInfo(Constants)) {
+        .void => .{ &.{}, &.{} },
         .@"struct" => |*info| block: {
             if (info.layout != .@"extern") {
                 @compileError(std.fmt.comptimePrint(
@@ -560,13 +560,13 @@ fn checkConstantsLayout(comptime Constants: type, reflection: *const w32.ID3D11S
                     .{ @typeName(Constants), @tagName(info.layout) },
                 ));
             }
-            break :block info.fields;
+            break :block .{ info.field_names, info.field_types };
         },
         else => @compileError("Expecting Constants to be a struct type but got: " ++ @typeName(Constants)),
     };
 
     const gpu_constants = reflection.GetConstantBufferByName("Constants") orelse {
-        if (cpu_fields.len == 0) {
+        if (cpu_names.len == 0) {
             return;
         }
         misc.error_context.new("Failed to find cbuffer called Constants inside the shader.", .{});
@@ -574,13 +574,13 @@ fn checkConstantsLayout(comptime Constants: type, reflection: *const w32.ID3D11S
     };
 
     var number_of_cpu_fields: usize = 0;
-    inline for (cpu_fields) |*cpu_field| {
-        errdefer misc.error_context.append("Check failed for CPU field: {s}", .{cpu_field.name});
-        if (cpu_field.name.len == 0 or cpu_field.name[0] == '_') {
+    inline for (cpu_names, cpu_types) |cpu_name, cpu_type| {
+        errdefer misc.error_context.append("Check failed for CPU field: {s}", .{cpu_name});
+        if (cpu_name.len == 0 or cpu_name[0] == '_') {
             continue;
         }
-        const gpu_variable = gpu_constants.GetVariableByName(cpu_field.name) orelse {
-            misc.error_context.append("Failed to find a GPU variable with matching name.", .{});
+        const gpu_variable = gpu_constants.GetVariableByName(cpu_name) orelse {
+            misc.error_context.new("Failed to find a GPU variable with matching name.", .{});
             return error.Dx11Error;
         };
         var gpu_variable_desc: w32.D3D11_SHADER_VARIABLE_DESC = undefined;
@@ -590,17 +590,17 @@ fn checkConstantsLayout(comptime Constants: type, reflection: *const w32.ID3D11S
             misc.error_context.append("ID3D11ShaderReflectionVariable.GetDesc returned a failure value.", .{});
             return error.Dx11Error;
         }
-        if (gpu_variable_desc.StartOffset != @offsetOf(Constants, cpu_field.name)) {
+        if (gpu_variable_desc.StartOffset != @offsetOf(Constants, cpu_name)) {
             misc.error_context.new(
                 "GPU offset {} does not match the CPU offset: {}",
-                .{ gpu_variable_desc.StartOffset, @offsetOf(Constants, cpu_field.name) },
+                .{ gpu_variable_desc.StartOffset, @offsetOf(Constants, cpu_name) },
             );
             return error.Dx11Error;
         }
-        if (gpu_variable_desc.Size != @sizeOf(cpu_field.type)) {
+        if (gpu_variable_desc.Size != @sizeOf(cpu_type)) {
             misc.error_context.new(
                 "GPU size {} does not match the CPU size: {}",
-                .{ gpu_variable_desc.Size, @sizeOf(cpu_field.type) },
+                .{ gpu_variable_desc.Size, @sizeOf(cpu_type) },
             );
             return error.Dx11Error;
         }
@@ -610,7 +610,7 @@ fn checkConstantsLayout(comptime Constants: type, reflection: *const w32.ID3D11S
     var gpu_constants_desc: w32.D3D11_SHADER_BUFFER_DESC = undefined;
     const desc_result = gpu_constants.GetDesc(&gpu_constants_desc);
     if (dx11.Error.from(desc_result)) |err| {
-        if (cpu_fields.len == 0) {
+        if (cpu_names.len == 0) {
             return;
         }
         misc.error_context.new("{f}", .{err});
@@ -1099,7 +1099,7 @@ test "init should error when constant field is missing on GPU side" {
     );
 }
 
-test "init should error when constant field has different offset on GPU then on CPU" {
+test "init should error when constant field has different offset on GPU than on CPU" {
     if (@import("config").skip_gpu) {
         return error.SkipZigTest;
     }
@@ -1142,7 +1142,7 @@ test "init should error when constant field has different offset on GPU then on 
     );
 }
 
-test "init should error when constant field has different size on GPU then on CPU" {
+test "init should error when constant field has different size on GPU than on CPU" {
     if (@import("config").skip_gpu) {
         return error.SkipZigTest;
     }

@@ -20,6 +20,7 @@ test {
 
     _ = @import("sdk/io/irony.zig");
     _ = @import("sdk/io/json.zig");
+    _ = @import("sdk/io/virtual_cwd_io.zig");
     _ = @import("sdk/io/zstd.zig");
 
     _ = @import("sdk/log/buffer.zig");
@@ -47,7 +48,6 @@ test {
     _ = @import("sdk/memory/range.zig");
     _ = @import("sdk/memory/struct_with_offsets.zig");
 
-    _ = @import("sdk/misc/base_dir.zig");
     _ = @import("sdk/misc/bounded_array.zig");
     _ = @import("sdk/misc/circular_buffer.zig");
     _ = @import("sdk/misc/error_context.zig");
@@ -61,8 +61,9 @@ test {
     _ = @import("sdk/os/memory.zig");
     _ = @import("sdk/os/misc.zig");
     _ = @import("sdk/os/module.zig");
-    _ = @import("sdk/os/process_id.zig");
     _ = @import("sdk/os/process.zig");
+    _ = @import("sdk/os/process_id.zig");
+    _ = @import("sdk/os/raw_input_hook.zig");
     _ = @import("sdk/os/remote_slice.zig");
     _ = @import("sdk/os/remote_thread.zig");
     _ = @import("sdk/os/shared_value.zig");
@@ -71,6 +72,7 @@ test {
     _ = @import("sdk/ui/allocator.zig");
     _ = @import("sdk/ui/context.zig"); // Make sure this test gets executed before UI testing context is initialized.
     _ = @import("sdk/ui/testing_context.zig"); // First test using UI testing context.
+    _ = @import("sdk/ui/keyboard.zig");
     _ = @import("sdk/ui/toasts.zig");
 
     _ = @import("injector.zig");
@@ -78,9 +80,10 @@ test {
     _ = @import("injector/process_loop.zig");
 
     _ = @import("dll.zig");
-    _ = @import("dll/event_buss.zig");
+    _ = @import("dll/event_bus.zig");
 
     _ = @import("dll/core/automation.zig");
+    _ = @import("dll/core/camera_director.zig");
     _ = @import("dll/core/controller.zig");
     _ = @import("dll/core/core.zig");
     _ = @import("dll/core/hit_detector.zig");
@@ -115,14 +118,17 @@ test {
     _ = @import("dll/rendering/lines.zig");
     _ = @import("dll/rendering/rendering.zig");
     _ = @import("dll/rendering/shapes.zig");
+    _ = @import("dll/rendering/triangles.zig");
 
     _ = @import("dll/ui/about_window.zig");
     _ = @import("dll/ui/camera.zig");
     _ = @import("dll/ui/collision_spheres.zig");
+    _ = @import("dll/ui/confirm_dialog.zig");
     _ = @import("dll/ui/control_hints.zig");
     _ = @import("dll/ui/controls.zig");
     _ = @import("dll/ui/data.zig");
     _ = @import("dll/ui/details.zig");
+    _ = @import("dll/ui/dialog.zig");
     _ = @import("dll/ui/file_menu.zig");
     _ = @import("dll/ui/forward_directions.zig");
     _ = @import("dll/ui/frame_window.zig");
@@ -149,6 +155,7 @@ test {
     _ = @import("dll/ui/ui.zig");
     _ = @import("dll/ui/version_info.zig");
     _ = @import("dll/ui/view.zig");
+    _ = @import("dll/ui/view_camera.zig");
 
     _ = struct {
         test "should have no memory leaks after de-initializing UI testing context" {

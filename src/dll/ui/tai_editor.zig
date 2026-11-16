@@ -389,7 +389,7 @@ pub const TaiEditor = struct {
             _ = self.uncommitted.pop();
         };
         self.uncommitted.append(self.allocator, change.*) catch |err| {
-            sdk.misc.error_context.new("Failed append the change to uncommitted changes.", .{});
+            sdk.misc.error_context.new("Failed to append the change to uncommitted changes.", .{});
             return err;
         };
     }
@@ -426,7 +426,7 @@ pub const TaiEditor = struct {
             number_of_changes_applied += 1;
             if (changed_something) {
                 self.undo_stack.append(self.allocator, change.*) catch |err| {
-                    sdk.misc.error_context.append("Failed to append change {} to undo stack.", .{change_index});
+                    sdk.misc.error_context.new("Failed to append change {} to undo stack.", .{change_index});
                     return err;
                 };
                 number_of_changes_appended += 1;
@@ -547,7 +547,12 @@ pub const TaiEditor = struct {
         self.selection = .initial;
     }
 
-    pub fn importFromRecording(self: *Self, tai: *core.ToolAssistedInput, controller: *const core.Controller) !void {
+    pub fn importFromRecording(self: *Self, tai: *core.ToolAssistedInput, controller: anytype) !void {
+        if (@typeInfo(@TypeOf(controller)) != .pointer) {
+            @compileError(
+                "Expecting the controller to be passed by reference but got type: " ++ @typeName(@TypeOf(controller)),
+            );
+        }
         self.clear(tai);
         const total_frames = controller.getTotalFrames();
         tai.sequence.ensureTotalCapacity(tai.allocator, total_frames) catch |err| {
@@ -628,7 +633,7 @@ const Change = union(enum) {
             }
             tai.sequence.insert(tai.allocator, self.index, self.new_values) catch |err| {
                 sdk.misc.error_context.new(
-                    "Failed to insert a item into the tool assisted input sequence at index: {}",
+                    "Failed to insert an item into the tool assisted input sequence at index: {}",
                     .{self.index},
                 );
                 return err;
@@ -944,6 +949,32 @@ test "commit should revert changes and return error when operating out of bounds
         .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
         .{ .player_1 = .{ .back = true }, .player_2 = .{ .button_4 = true } },
     }, tai.sequence.items);
+}
+
+test "discardUncommitted should drop pending changes without applying them" {
+    var editor = TaiEditor.init(testing.allocator);
+    defer editor.deinit();
+    var tai = core.ToolAssistedInput.init(testing.allocator);
+    defer tai.deinit();
+    try tai.sequence.appendSlice(testing.allocator, &.{
+        .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .down = true }, .player_2 = .{ .button_2 = true } },
+    });
+
+    editor.selection = .{
+        .start = .{ .index = 0, .player_id = .player_1 },
+        .end = .{ .index = 1, .player_id = .player_2 },
+    };
+    try editor.setValues(.{ .button_3 = true }, tai.sequence.items.len);
+    try editor.insertRows();
+    editor.discardUncommitted();
+    try editor.commit(&tai);
+
+    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
+        .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .down = true }, .player_2 = .{ .button_2 = true } },
+    }, tai.sequence.items);
+    try testing.expectEqual(false, editor.canUndo());
 }
 
 test "undo should return error when there is nothing to undo" {
@@ -1317,7 +1348,7 @@ test "move should move selected values to specified destination index" {
     }, editor.selection);
 }
 
-test "swapSides should should swap values between player 1 and player 2 on selected indices" {
+test "swapSides should swap values between player 1 and player 2 on selected indices" {
     var editor = TaiEditor.init(testing.allocator);
     defer editor.deinit();
     var tai = core.ToolAssistedInput.init(testing.allocator);
@@ -1418,7 +1449,7 @@ test "swapSides should should swap values between player 1 and player 2 on selec
     }, editor.selection);
 }
 
-test "setValues should set every cell the selection to the specified value" {
+test "setValues should set every cell in the selection to the specified value" {
     var editor = TaiEditor.init(testing.allocator);
     defer editor.deinit();
     var tai = core.ToolAssistedInput.init(testing.allocator);
@@ -1724,4 +1755,133 @@ test "paste should change the selection controlled part of sequence to match the
         .{ .player_1 = .{ .button_3 = true }, .player_2 = .{ .button_1 = true } },
         .{ .player_1 = .{}, .player_2 = .{ .button_3 = true } },
     }, tai.sequence.items);
+}
+
+test "clear should remove all rows, pending changes, undo and redo history and reset selection" {
+    var editor = TaiEditor.init(testing.allocator);
+    defer editor.deinit();
+    var tai = core.ToolAssistedInput.init(testing.allocator);
+    defer tai.deinit();
+    try tai.sequence.appendSlice(testing.allocator, &.{
+        .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .down = true }, .player_2 = .{ .button_2 = true } },
+        .{ .player_1 = .{ .forward = true }, .player_2 = .{ .button_3 = true } },
+    });
+
+    editor.selection = .{
+        .start = .{ .index = 0, .player_id = .player_1 },
+        .end = .{ .index = 0, .player_id = .player_2 },
+    };
+    try editor.setValues(.{ .button_4 = true }, tai.sequence.items.len);
+    try editor.commit(&tai);
+    editor.selection = .{
+        .start = .{ .index = 1, .player_id = .player_1 },
+        .end = .{ .index = 1, .player_id = .player_2 },
+    };
+    try editor.setValues(.{ .button_4 = true }, tai.sequence.items.len);
+    try editor.commit(&tai);
+    try editor.undo(&tai);
+    editor.selection = .{
+        .start = .{ .index = 1, .player_id = .player_2 },
+        .end = .{ .index = 2, .player_id = .player_2 },
+    };
+    try editor.setValues(.{ .back = true }, tai.sequence.items.len);
+    try testing.expectEqual(true, editor.canUndo());
+    try testing.expectEqual(true, editor.canRedo());
+
+    editor.clear(&tai);
+
+    try testing.expectEqual(0, tai.sequence.items.len);
+    try testing.expectEqual(false, editor.canUndo());
+    try testing.expectEqual(false, editor.canRedo());
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 0, .player_id = .player_1 },
+        .end = .{ .index = 0, .player_id = .player_1 },
+    }, editor.selection);
+
+    try editor.commit(&tai);
+
+    try testing.expectEqual(0, tai.sequence.items.len);
+    try testing.expectEqual(false, editor.canUndo());
+}
+
+const MockController = struct {
+    frames: []const model.Frame,
+
+    const Self = @This();
+
+    pub fn getTotalFrames(self: *const Self) usize {
+        return self.frames.len;
+    }
+
+    pub fn getFrameAt(self: *const Self, index: usize) ?*const model.Frame {
+        return if (index < self.frames.len) &self.frames[index] else null;
+    }
+};
+
+test "importFromRecording should replace the sequence with inputs from the recording" {
+    var editor = TaiEditor.init(testing.allocator);
+    defer editor.deinit();
+    var tai = core.ToolAssistedInput.init(testing.allocator);
+    defer tai.deinit();
+    const controller = MockController{ .frames = &.{
+        .{ .players = .{
+            .{ .input = .{ .up = true } },
+            .{ .input = .{ .button_1 = true } },
+        } },
+        .{ .players = .{
+            .{ .input = null },
+            .{ .input = .{ .down = true } },
+        } },
+        .{ .players = .{
+            .{ .input = .{ .forward = true, .button_2 = true } },
+            .{ .input = null },
+        } },
+    } };
+    try tai.sequence.appendSlice(testing.allocator, &.{
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .button_2 = true }, .player_2 = .{ .button_2 = true } },
+    });
+
+    editor.selection = .{
+        .start = .{ .index = 0, .player_id = .player_1 },
+        .end = .{ .index = 0, .player_id = .player_2 },
+    };
+    try editor.setValues(.{ .button_3 = true }, tai.sequence.items.len);
+    try editor.commit(&tai);
+    editor.selection = .{
+        .start = .{ .index = 1, .player_id = .player_2 },
+        .end = .{ .index = 1, .player_id = .player_2 },
+    };
+    try testing.expectEqual(true, editor.canUndo());
+
+    try editor.importFromRecording(&tai, &controller);
+
+    try testing.expectEqualSlices(core.ToolAssistedInput.SequenceItem, &.{
+        .{ .player_1 = .{ .up = true }, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{}, .player_2 = .{ .down = true } },
+        .{ .player_1 = .{ .forward = true, .button_2 = true }, .player_2 = .{} },
+    }, tai.sequence.items);
+    try testing.expectEqual(false, editor.canUndo());
+    try testing.expectEqual(false, editor.canRedo());
+    try testing.expectEqual(TaiEditor.Selection{
+        .start = .{ .index = 0, .player_id = .player_1 },
+        .end = .{ .index = 0, .player_id = .player_1 },
+    }, editor.selection);
+}
+
+test "importFromRecording should produce an empty sequence when the recording is empty" {
+    var editor = TaiEditor.init(testing.allocator);
+    defer editor.deinit();
+    var tai = core.ToolAssistedInput.init(testing.allocator);
+    defer tai.deinit();
+    const controller = MockController{ .frames = &.{} };
+    try tai.sequence.appendSlice(testing.allocator, &.{
+        .{ .player_1 = .{ .button_1 = true }, .player_2 = .{ .button_1 = true } },
+        .{ .player_1 = .{ .button_2 = true }, .player_2 = .{ .button_2 = true } },
+    });
+
+    try editor.importFromRecording(&tai, &controller);
+
+    try testing.expectEqual(0, tai.sequence.items.len);
 }

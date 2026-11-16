@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_info = @import("build_info");
 const sdk = @import("../../sdk/root.zig");
+const model = @import("../model/root.zig");
 const game = @import("root.zig");
 
 pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () void) type {
@@ -10,16 +11,21 @@ pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () vo
         var process_input_hook: ?ProcessInputHook = null;
         var cancel_requirements_hook: ?CancelRequirementsHook = null;
         var render_targets_hook: ?RenderTargetsHook = null;
+        var get_view_point_hook: ?GetViewPointHook = null;
         var active_hook_calls = std.atomic.Value(u8).init(0);
 
         pub var input_override: game.InputOverride = .{};
         pub var cancel_requirements: game.CancelRequirements = .{};
         pub var depth_buffer_address: usize = 0;
+        pub var camera_override: ?model.Camera = null;
+        pub var last_original_view_info: game.ViewInfo(game_id) = .{};
+        pub var last_overridden_view_info: game.ViewInfo(game_id) = .{};
 
         const TickHook = sdk.memory.Hook(game.TickFunction(game_id));
         const ProcessInputHook = sdk.memory.Hook(game.ProcessInputFunction(game_id));
         const CancelRequirementsHook = sdk.memory.Hook(game.ProcessCancelRequirementFunction);
         const RenderTargetsHook = sdk.memory.Hook(game.SetRenderTargetsFunction);
+        const GetViewPointHook = sdk.memory.Hook(game.GetViewPointFunction(game_id));
 
         pub fn init(game_functions: *const game.Memory(game_id).Functions) void {
             std.log.debug("Creating process input hook...", .{});
@@ -101,6 +107,27 @@ pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () vo
                 }
             }
 
+            std.log.debug("Creating get view point hook...", .{});
+            if (game_functions.getViewPoint) |function| {
+                const detour = switch (game_id) {
+                    .t7 => onT7GetViewPoint,
+                    .t8 => onT8GetViewPoint,
+                };
+                if (GetViewPointHook.create(function, detour)) |hook| {
+                    get_view_point_hook = hook;
+                    std.log.info("Get view point hook created.", .{});
+                } else |err| {
+                    if (!builtin.is_test) {
+                        sdk.misc.error_context.append("Failed to create get view point hook.", .{});
+                        sdk.misc.error_context.logError(err);
+                    }
+                }
+            } else if (!builtin.is_test) {
+                sdk.misc.error_context.new("Get view point function not found.", .{});
+                sdk.misc.error_context.append("Failed to create get view point hook.", .{});
+                sdk.misc.error_context.logError(error.NotFound);
+            }
+
             if (process_input_hook) |*hook| {
                 std.log.debug("Enabling process input hook...", .{});
                 if (hook.enable()) {
@@ -140,13 +167,134 @@ pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () vo
                     sdk.misc.error_context.logError(err);
                 }
             }
+
+            if (get_view_point_hook) |*hook| {
+                std.log.debug("Enabling get view point hook...", .{});
+                if (hook.enable()) {
+                    std.log.info("Get view point hook enabled.", .{});
+                } else |err| {
+                    sdk.misc.error_context.append("Failed to enable get view point hook.", .{});
+                    sdk.misc.error_context.logError(err);
+                }
+            }
         }
 
-        pub fn deinit() void {
+        pub fn deinit(io: std.Io) void {
+            std.log.debug("Disabling get view point hook...", .{});
+            var is_get_view_point_hook_disabled = false;
+            if (get_view_point_hook) |*hook| {
+                if (hook.disable()) {
+                    is_get_view_point_hook_disabled = true;
+                    std.log.info("Get view point hook disabled.", .{});
+                } else |err| switch (err) {
+                    error.HookDisabled => is_get_view_point_hook_disabled = true,
+                    else => {
+                        sdk.misc.error_context.append("Failed to disable get view point hook.", .{});
+                        sdk.misc.error_context.logError(err);
+                    },
+                }
+            } else {
+                std.log.debug("Nothing to disable.", .{});
+            }
+
+            var is_render_targets_hook_disabled = false;
+            if (game_id == .t8) {
+                std.log.debug("Disabling render targets hook...", .{});
+                if (render_targets_hook) |*hook| {
+                    if (hook.disable()) {
+                        is_render_targets_hook_disabled = true;
+                        std.log.info("Render targets hook disabled.", .{});
+                    } else |err| switch (err) {
+                        error.HookDisabled => is_render_targets_hook_disabled = true,
+                        else => {
+                            sdk.misc.error_context.append("Failed to disable render targets hook.", .{});
+                            sdk.misc.error_context.logError(err);
+                        },
+                    }
+                } else {
+                    std.log.debug("Nothing to disable.", .{});
+                }
+            }
+
+            std.log.debug("Disabling cancel requirements hook...", .{});
+            var is_cancel_requirements_hook_disabled = false;
+            if (cancel_requirements_hook) |*hook| {
+                if (hook.disable()) {
+                    is_cancel_requirements_hook_disabled = true;
+                    std.log.info("Cancel requirements hook disabled.", .{});
+                } else |err| switch (err) {
+                    error.HookDisabled => is_cancel_requirements_hook_disabled = true,
+                    else => {
+                        sdk.misc.error_context.append("Failed to disable cancel requirements hook.", .{});
+                        sdk.misc.error_context.logError(err);
+                    },
+                }
+            } else {
+                std.log.debug("Nothing to disable.", .{});
+            }
+
+            std.log.debug("Disabling tick hook...", .{});
+            var is_tick_hook_disabled = false;
+            if (tick_hook) |*hook| {
+                if (hook.disable()) {
+                    is_tick_hook_disabled = true;
+                    std.log.info("Tick hook disabled.", .{});
+                } else |err| switch (err) {
+                    error.HookDisabled => is_tick_hook_disabled = true,
+                    else => {
+                        sdk.misc.error_context.append("Failed to disable tick hook.", .{});
+                        sdk.misc.error_context.logError(err);
+                    },
+                }
+            } else {
+                std.log.debug("Nothing to disable.", .{});
+            }
+
+            std.log.debug("Disabling process input hook...", .{});
+            var is_process_input_hook_disabled = false;
+            if (process_input_hook) |*hook| {
+                if (hook.disable()) {
+                    is_process_input_hook_disabled = true;
+                    std.log.info("Process input hook disabled.", .{});
+                } else |err| switch (err) {
+                    error.HookDisabled => is_process_input_hook_disabled = true,
+                    else => {
+                        sdk.misc.error_context.append("Failed to disable process input hook.", .{});
+                        sdk.misc.error_context.logError(err);
+                    },
+                }
+            } else {
+                std.log.debug("Nothing to disable.", .{});
+            }
+
+            while (active_hook_calls.load(.seq_cst) > 0) {
+                io.sleep(.fromMilliseconds(10), .awake) catch |err| {
+                    sdk.misc.error_context.new("Failed to sleep for 10 ms while waiting on active game hooks.", .{});
+                    sdk.misc.error_context.logError(err);
+                };
+            }
+
+            std.log.debug("Destroying get view point hook...", .{});
+            if (get_view_point_hook) |*hook| {
+                if (!is_get_view_point_hook_disabled) {
+                    std.log.warn("Skipping the destruction of get view point hook since disabling it failed.", .{});
+                } else if (hook.destroy()) {
+                    std.log.info("Get view point hook destroyed.", .{});
+                    get_view_point_hook = null;
+                } else |err| {
+                    sdk.misc.error_context.append("Failed to destroy get view point hook.", .{});
+                    sdk.misc.error_context.logError(err);
+                }
+            } else {
+                std.log.debug("Nothing to destroy.", .{});
+            }
+
             if (game_id == .t8) {
                 std.log.debug("Destroying render targets hook...", .{});
                 if (render_targets_hook) |*hook| {
-                    if (hook.destroy()) {
+                    if (!is_render_targets_hook_disabled) {
+                        std.log.warn("Skipping the destruction of render targets hook since disabling it failed.", .{});
+                    } else if (hook.destroy()) {
                         std.log.info("Render targets hook destroyed.", .{});
                         render_targets_hook = null;
                     } else |err| {
@@ -160,7 +308,12 @@ pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () vo
 
             std.log.debug("Destroying cancel requirements hook...", .{});
             if (cancel_requirements_hook) |*hook| {
-                if (hook.destroy()) {
+                if (!is_cancel_requirements_hook_disabled) {
+                    std.log.warn(
+                        "Skipping the destruction of cancel requirements hook since disabling it failed.",
+                        .{},
+                    );
+                } else if (hook.destroy()) {
                     std.log.info("Cancel requirements hook destroyed.", .{});
                     cancel_requirements_hook = null;
                 } else |err| {
@@ -173,7 +326,9 @@ pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () vo
 
             std.log.debug("Destroying tick hook...", .{});
             if (tick_hook) |*hook| {
-                if (hook.destroy()) {
+                if (!is_tick_hook_disabled) {
+                    std.log.warn("Skipping the destruction of tick hook since disabling it failed.", .{});
+                } else if (hook.destroy()) {
                     std.log.info("Tick hook destroyed.", .{});
                     tick_hook = null;
                 } else |err| {
@@ -186,9 +341,11 @@ pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () vo
 
             std.log.debug("Destroying process input hook...", .{});
             if (process_input_hook) |*hook| {
-                if (hook.destroy()) {
+                if (!is_process_input_hook_disabled) {
+                    std.log.warn("Skipping the destruction of process input hook since disabling it failed.", .{});
+                } else if (hook.destroy()) {
                     std.log.info("Process input hook destroyed.", .{});
-                    tick_hook = null;
+                    process_input_hook = null;
                 } else |err| {
                     sdk.misc.error_context.append("Failed to destroy process input hook.", .{});
                     sdk.misc.error_context.logError(err);
@@ -196,25 +353,21 @@ pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () vo
             } else {
                 std.log.debug("Nothing to destroy.", .{});
             }
-
-            while (active_hook_calls.load(.seq_cst) > 0) {
-                std.Thread.sleep(10 * std.time.ns_per_ms);
-            }
         }
 
-        fn onT7Tick(param_1: u8, param_2: u32) callconv(.c) void {
+        fn onT7Tick(use_fixed_step: sdk.memory.Boolean(.{}), delta_time: f32) callconv(.c) void {
             _ = active_hook_calls.fetchAdd(1, .seq_cst);
             defer _ = active_hook_calls.fetchSub(1, .seq_cst);
             cancel_requirements = .{};
-            tick_hook.?.original(param_1, param_2);
+            tick_hook.?.original(use_fixed_step, delta_time);
             onTick();
         }
 
-        fn onT8Tick(param_1: u64, param_2: u8, param_3: u8, param_4: u8) callconv(.c) void {
+        fn onT8Tick(param_1: u64, use_fixed_step: sdk.memory.Boolean(.{}), delta_time: f32, param_4: u8) callconv(.c) void {
             _ = active_hook_calls.fetchAdd(1, .seq_cst);
             defer _ = active_hook_calls.fetchSub(1, .seq_cst);
             cancel_requirements = .{};
-            tick_hook.?.original(param_1, param_2, param_3, param_4);
+            tick_hook.?.original(param_1, use_fixed_step, delta_time, param_4);
             onTick();
         }
 
@@ -295,6 +448,37 @@ pub fn Hooks(comptime game_id: build_info.Game, comptime onTick: *const fn () vo
             const trail = sdk.memory.PointerTrail.fromArray(.{ param_3 +| 0x48, 0x20, 0x0 });
             depth_buffer_address = trail.resolve() orelse 0;
         }
+
+        fn onT7GetViewPoint(
+            this: *const anyopaque,
+            out_view_info: *game.ViewInfo(.t7),
+            stereo_pass: u32,
+        ) callconv(.c) void {
+            _ = active_hook_calls.fetchAdd(1, .seq_cst);
+            defer _ = active_hook_calls.fetchSub(1, .seq_cst);
+            get_view_point_hook.?.original(this, out_view_info, stereo_pass);
+            applyCameraOverride(out_view_info);
+        }
+
+        fn onT8GetViewPoint(this: *const anyopaque, out_view_info: *game.ViewInfo(.t8)) callconv(.c) void {
+            _ = active_hook_calls.fetchAdd(1, .seq_cst);
+            defer _ = active_hook_calls.fetchSub(1, .seq_cst);
+            get_view_point_hook.?.original(this, out_view_info);
+            applyCameraOverride(out_view_info);
+        }
+
+        fn applyCameraOverride(out_view_info: *game.ViewInfo(game_id)) void {
+            last_original_view_info = out_view_info.*;
+            if (camera_override) |*camera| {
+                out_view_info.position.setConverted(camera.position);
+                out_view_info.rotation.setConverted(.fromArray(.{ camera.pitch, camera.yaw, camera.roll }));
+                out_view_info.horizontal_fov.setConverted(camera.horizontal_fov);
+                if (game_id == .t8) {
+                    out_view_info.desired_horizontal_fov.setConverted(camera.horizontal_fov);
+                }
+            }
+            last_overridden_view_info = out_view_info.*;
+        }
     };
 }
 
@@ -303,12 +487,12 @@ const testing = std.testing;
 test "should call onTick and original when tick function is called in T7" {
     const Tick = struct {
         var times_called: usize = 0;
-        var last_param_1: ?u8 = null;
-        var last_param_2: ?u32 = null;
-        fn call(param_1: u8, param_2: u32) callconv(.c) void {
+        var last_use_fixed_step: ?sdk.memory.Boolean(.{}) = null;
+        var last_delta_time: ?f32 = null;
+        fn call(use_fixed_step: sdk.memory.Boolean(.{}), delta_time: f32) callconv(.c) void {
             times_called += 1;
-            last_param_1 = param_1;
-            last_param_2 = param_2;
+            last_use_fixed_step = use_fixed_step;
+            last_delta_time = delta_time;
         }
     };
     const OnTick = struct {
@@ -322,14 +506,14 @@ test "should call onTick and original when tick function is called in T7" {
     try sdk.memory.hooking.init();
     defer sdk.memory.hooking.deinit() catch @panic("Failed to de-initialize hooking.");
     hooks.init(&.{ .tick = Tick.call });
-    defer hooks.deinit();
+    defer hooks.deinit(testing.io);
 
     try testing.expectEqual(0, Tick.times_called);
     try testing.expectEqual(0, OnTick.times_called);
-    Tick.call(123, 456);
+    Tick.call(.false, 0.25);
     try testing.expectEqual(1, Tick.times_called);
-    try testing.expectEqual(123, Tick.last_param_1);
-    try testing.expectEqual(456, Tick.last_param_2);
+    try testing.expectEqual(.false, Tick.last_use_fixed_step);
+    try testing.expectEqual(0.25, Tick.last_delta_time);
     try testing.expectEqual(1, OnTick.times_called);
 }
 
@@ -337,14 +521,14 @@ test "should call onTick and original when tick function is called in T8" {
     const Tick = struct {
         var times_called: usize = 0;
         var last_param_1: ?u64 = null;
-        var last_param_2: ?u8 = null;
-        var last_param_3: ?u8 = null;
+        var last_use_fixed_step: ?sdk.memory.Boolean(.{}) = null;
+        var last_delta_time: ?f32 = null;
         var last_param_4: ?u8 = null;
-        fn call(param_1: u64, param_2: u8, param_3: u8, param_4: u8) callconv(.c) void {
+        fn call(param_1: u64, use_fixed_step: sdk.memory.Boolean(.{}), delta_time: f32, param_4: u8) callconv(.c) void {
             times_called += 1;
             last_param_1 = param_1;
-            last_param_2 = param_2;
-            last_param_3 = param_3;
+            last_use_fixed_step = use_fixed_step;
+            last_delta_time = delta_time;
             last_param_4 = param_4;
         }
     };
@@ -359,15 +543,15 @@ test "should call onTick and original when tick function is called in T8" {
     try sdk.memory.hooking.init();
     defer sdk.memory.hooking.deinit() catch @panic("Failed to de-initialize hooking.");
     hooks.init(&.{ .tick = Tick.call });
-    defer hooks.deinit();
+    defer hooks.deinit(testing.io);
 
     try testing.expectEqual(0, Tick.times_called);
     try testing.expectEqual(0, OnTick.times_called);
-    Tick.call(2, 3, 4, 5);
+    Tick.call(2, .false, 0.25, 5);
     try testing.expectEqual(1, Tick.times_called);
     try testing.expectEqual(2, Tick.last_param_1);
-    try testing.expectEqual(3, Tick.last_param_2);
-    try testing.expectEqual(4, Tick.last_param_3);
+    try testing.expectEqual(.false, Tick.last_use_fixed_step);
+    try testing.expectEqual(0.25, Tick.last_delta_time);
     try testing.expectEqual(5, Tick.last_param_4);
     try testing.expectEqual(1, OnTick.times_called);
 }
@@ -400,7 +584,7 @@ test "should apply input override correctly in T7" {
     try sdk.memory.hooking.init();
     defer sdk.memory.hooking.deinit() catch @panic("Failed to de-initialize hooking.");
     hooks.init(&.{ .processInput = ProcessInput.call });
-    defer hooks.deinit();
+    defer hooks.deinit(testing.io);
 
     hooks.input_override = .{
         .player_1 = .{
@@ -477,7 +661,7 @@ test "should apply input override correctly in T8" {
     try sdk.memory.hooking.init();
     defer sdk.memory.hooking.deinit() catch @panic("Failed to de-initialize hooking.");
     hooks.init(&.{ .processInput = ProcessInput.call });
-    defer hooks.deinit();
+    defer hooks.deinit(testing.io);
 
     hooks.input_override = .{
         .player_1 = .{
@@ -551,7 +735,7 @@ test "should set cancel_requirements and call original when process cancel requi
     try sdk.memory.hooking.init();
     defer sdk.memory.hooking.deinit() catch @panic("Failed to de-initialize hooking.");
     hooks.init(&.{ .processCancelRequirement = ProcessCancelRequirement.call });
-    defer hooks.deinit();
+    defer hooks.deinit(testing.io);
 
     try testing.expectEqual(game.CancelRequirements{}, hooks.cancel_requirements);
     try testing.expectEqual(0, ProcessCancelRequirement.times_called);
@@ -613,7 +797,7 @@ test "should set cancel_requirements and call original when process cancel requi
 
 test "should reset cancel_requirements when tick function is called in T7" {
     const Tick = struct {
-        fn call(_: u8, _: u32) callconv(.c) void {}
+        fn call(_: sdk.memory.Boolean(.{}), _: f32) callconv(.c) void {}
     };
     const OnTick = struct {
         fn call() void {}
@@ -623,7 +807,7 @@ test "should reset cancel_requirements when tick function is called in T7" {
     try sdk.memory.hooking.init();
     defer sdk.memory.hooking.deinit() catch @panic("Failed to de-initialize hooking.");
     hooks.init(&.{ .tick = Tick.call });
-    defer hooks.deinit();
+    defer hooks.deinit(testing.io);
 
     hooks.cancel_requirements = .{
         .throw_escape_press_1 = true,
@@ -631,13 +815,13 @@ test "should reset cancel_requirements when tick function is called in T7" {
         .throw_escape_press_1_plus_2 = true,
         .throw_escape_hold = true,
     };
-    Tick.call(123, 456);
+    Tick.call(.true, 0);
     try testing.expectEqual(game.CancelRequirements{}, hooks.cancel_requirements);
 }
 
 test "should reset cancel_requirements when tick function is called in T8" {
     const Tick = struct {
-        fn call(_: u64, _: u8, _: u8, _: u8) callconv(.c) void {}
+        fn call(_: u64, _: sdk.memory.Boolean(.{}), _: f32, _: u8) callconv(.c) void {}
     };
     const OnTick = struct {
         fn call() void {}
@@ -647,7 +831,7 @@ test "should reset cancel_requirements when tick function is called in T8" {
     try sdk.memory.hooking.init();
     defer sdk.memory.hooking.deinit() catch @panic("Failed to de-initialize hooking.");
     hooks.init(&.{ .tick = Tick.call });
-    defer hooks.deinit();
+    defer hooks.deinit(testing.io);
 
     hooks.cancel_requirements = .{
         .throw_escape_press_1 = true,
@@ -655,7 +839,7 @@ test "should reset cancel_requirements when tick function is called in T8" {
         .throw_escape_press_1_plus_2 = true,
         .throw_escape_hold = true,
     };
-    Tick.call(2, 3, 4, 5);
+    Tick.call(2, .true, 0, 5);
     try testing.expectEqual(game.CancelRequirements{}, hooks.cancel_requirements);
 }
 
@@ -682,7 +866,7 @@ test "should set depth_buffer_address to correct value and call original when se
     try sdk.memory.hooking.init();
     defer sdk.memory.hooking.deinit() catch @panic("Failed to de-initialize hooking.");
     hooks.init(&.{ .setRenderTargets = SetRenderTargets.call });
-    defer hooks.deinit();
+    defer hooks.deinit(testing.io);
 
     const B = extern struct {
         _padding: [0x20]u8 = undefined,
@@ -719,4 +903,158 @@ test "should set depth_buffer_address to correct value and call original when se
     try testing.expectEqual(13, SetRenderTargets.last_param_2);
     try testing.expectEqual(0, SetRenderTargets.last_param_3);
     try testing.expectEqual(123, hooks.depth_buffer_address);
+}
+
+test "should call original and apply camera override when get view point function is called in T7" {
+    const ViewInfo = game.ViewInfo(.t7);
+    const GetViewPoint = struct {
+        var times_called: usize = 0;
+        var last_this: ?*const anyopaque = null;
+        var last_stereo_pass: ?u32 = null;
+        fn call(this: *const anyopaque, out_view_info: *ViewInfo, stereo_pass: u32) callconv(.c) void {
+            times_called += 1;
+            last_this = this;
+            last_stereo_pass = stereo_pass;
+            out_view_info.* = .{
+                .position = .fromRaw(.fromArray(.{ 1, 2, 3 })),
+                .rotation = .fromRaw(.fromArray(.{ 4, 5, 6 })),
+                .horizontal_fov = .fromRaw(7),
+            };
+        }
+    };
+    const OnTick = struct {
+        fn call() void {}
+    };
+    const hooks = Hooks(.t7, OnTick.call);
+
+    try sdk.memory.hooking.init();
+    defer sdk.memory.hooking.deinit() catch @panic("Failed to de-initialize hooking.");
+    hooks.init(&.{ .getViewPoint = GetViewPoint.call });
+    defer hooks.deinit(testing.io);
+
+    const this_value: u8 = 0;
+    const this: *const anyopaque = &this_value;
+    var view_info = ViewInfo{};
+
+    hooks.camera_override = null;
+    GetViewPoint.call(this, &view_info, 1);
+    try testing.expectEqual(1, GetViewPoint.times_called);
+    try testing.expectEqual(this, GetViewPoint.last_this);
+    try testing.expectEqual(1, GetViewPoint.last_stereo_pass);
+    try testing.expectEqual(ViewInfo{
+        .position = .fromRaw(.fromArray(.{ 1, 2, 3 })),
+        .rotation = .fromRaw(.fromArray(.{ 4, 5, 6 })),
+        .horizontal_fov = .fromRaw(7),
+    }, view_info);
+    try testing.expectEqual(ViewInfo{
+        .position = .fromRaw(.fromArray(.{ 1, 2, 3 })),
+        .rotation = .fromRaw(.fromArray(.{ 4, 5, 6 })),
+        .horizontal_fov = .fromRaw(7),
+    }, hooks.last_original_view_info);
+    try testing.expectEqual(ViewInfo{
+        .position = .fromRaw(.fromArray(.{ 1, 2, 3 })),
+        .rotation = .fromRaw(.fromArray(.{ 4, 5, 6 })),
+        .horizontal_fov = .fromRaw(7),
+    }, hooks.last_overridden_view_info);
+
+    hooks.camera_override = .{
+        .position = .fromArray(.{ 11, 12, 13 }),
+        .pitch = 0.5 * std.math.pi,
+        .yaw = std.math.pi,
+        .roll = -0.25 * std.math.pi,
+        .horizontal_fov = 0.5 * std.math.pi,
+    };
+    GetViewPoint.call(this, &view_info, 2);
+    try testing.expectEqual(2, GetViewPoint.times_called);
+    try testing.expectEqual(this, GetViewPoint.last_this);
+    try testing.expectEqual(2, GetViewPoint.last_stereo_pass);
+    try testing.expectEqual(sdk.math.Vec3.fromArray(.{ 11, 12, 13 }), view_info.position.raw);
+    try testing.expectApproxEqAbs(90, view_info.rotation.raw.x(), 0.0001);
+    try testing.expectApproxEqAbs(180, view_info.rotation.raw.y(), 0.0001);
+    try testing.expectApproxEqAbs(-45, view_info.rotation.raw.z(), 0.0001);
+    try testing.expectApproxEqAbs(90, view_info.horizontal_fov.raw, 0.0001);
+    try testing.expectEqual(ViewInfo{
+        .position = .fromRaw(.fromArray(.{ 1, 2, 3 })),
+        .rotation = .fromRaw(.fromArray(.{ 4, 5, 6 })),
+        .horizontal_fov = .fromRaw(7),
+    }, hooks.last_original_view_info);
+    try testing.expectEqual(view_info, hooks.last_overridden_view_info);
+}
+
+test "should call original and apply camera override when get view point function is called in T8" {
+    const ViewInfo = game.ViewInfo(.t8);
+    const GetViewPoint = struct {
+        var times_called: usize = 0;
+        var last_this: ?*const anyopaque = null;
+        fn call(this: *const anyopaque, out_view_info: *ViewInfo) callconv(.c) void {
+            times_called += 1;
+            last_this = this;
+            out_view_info.* = .{
+                .position = .fromRaw(.fromArray(.{ 1, 2, 3 })),
+                .rotation = .fromRaw(.fromArray(.{ 4, 5, 6 })),
+                .horizontal_fov = .fromRaw(7),
+                .desired_horizontal_fov = .fromRaw(8),
+            };
+        }
+    };
+    const OnTick = struct {
+        fn call() void {}
+    };
+    const hooks = Hooks(.t8, OnTick.call);
+
+    try sdk.memory.hooking.init();
+    defer sdk.memory.hooking.deinit() catch @panic("Failed to de-initialize hooking.");
+    hooks.init(&.{ .getViewPoint = GetViewPoint.call });
+    defer hooks.deinit(testing.io);
+
+    const this_value: u8 = 0;
+    const this: *const anyopaque = &this_value;
+    var view_info = ViewInfo{};
+
+    hooks.camera_override = null;
+    GetViewPoint.call(this, &view_info);
+    try testing.expectEqual(1, GetViewPoint.times_called);
+    try testing.expectEqual(this, GetViewPoint.last_this);
+    try testing.expectEqual(ViewInfo{
+        .position = .fromRaw(.fromArray(.{ 1, 2, 3 })),
+        .rotation = .fromRaw(.fromArray(.{ 4, 5, 6 })),
+        .horizontal_fov = .fromRaw(7),
+        .desired_horizontal_fov = .fromRaw(8),
+    }, view_info);
+    try testing.expectEqual(ViewInfo{
+        .position = .fromRaw(.fromArray(.{ 1, 2, 3 })),
+        .rotation = .fromRaw(.fromArray(.{ 4, 5, 6 })),
+        .horizontal_fov = .fromRaw(7),
+        .desired_horizontal_fov = .fromRaw(8),
+    }, hooks.last_original_view_info);
+    try testing.expectEqual(ViewInfo{
+        .position = .fromRaw(.fromArray(.{ 1, 2, 3 })),
+        .rotation = .fromRaw(.fromArray(.{ 4, 5, 6 })),
+        .horizontal_fov = .fromRaw(7),
+        .desired_horizontal_fov = .fromRaw(8),
+    }, hooks.last_overridden_view_info);
+
+    hooks.camera_override = .{
+        .position = .fromArray(.{ 11, 12, 13 }),
+        .pitch = 0.5 * std.math.pi,
+        .yaw = std.math.pi,
+        .roll = -0.25 * std.math.pi,
+        .horizontal_fov = 0.5 * std.math.pi,
+    };
+    GetViewPoint.call(this, &view_info);
+    try testing.expectEqual(2, GetViewPoint.times_called);
+    try testing.expectEqual(this, GetViewPoint.last_this);
+    try testing.expectEqual(sdk.math.Vector(3, f64).fromArray(.{ 11, 12, 13 }), view_info.position.raw);
+    try testing.expectApproxEqAbs(90, view_info.rotation.raw.x(), 0.0001);
+    try testing.expectApproxEqAbs(180, view_info.rotation.raw.y(), 0.0001);
+    try testing.expectApproxEqAbs(-45, view_info.rotation.raw.z(), 0.0001);
+    try testing.expectApproxEqAbs(90, view_info.horizontal_fov.raw, 0.0001);
+    try testing.expectApproxEqAbs(90, view_info.desired_horizontal_fov.raw, 0.0001);
+    try testing.expectEqual(ViewInfo{
+        .position = .fromRaw(.fromArray(.{ 1, 2, 3 })),
+        .rotation = .fromRaw(.fromArray(.{ 4, 5, 6 })),
+        .horizontal_fov = .fromRaw(7),
+        .desired_horizontal_fov = .fromRaw(8),
+    }, hooks.last_original_view_info);
+    try testing.expectEqual(view_info, hooks.last_overridden_view_info);
 }

@@ -15,8 +15,8 @@ const dx = switch (rendering_api) {
     .dx12 => sdk.dx12,
 };
 
-pub const EventBuss = struct {
-    timer: sdk.misc.Timer(.{}),
+pub const EventBus = struct {
+    timer: sdk.misc.Timer,
     managed_dx_context: ?dx.ManagedContext,
     ui_context: ?UiContext,
     settings_task: SettingsTask,
@@ -29,10 +29,11 @@ pub const EventBuss = struct {
     const SettingsTask = sdk.misc.Task(model.Settings);
     const LatestVersionTask = sdk.misc.Task(?sdk.misc.Version);
     const UiContext = sdk.ui.Context(rendering_api);
+    pub const KeyboardInputAction = enum { pass_through, block };
 
     pub fn init(
         allocator: std.mem.Allocator,
-        base_dir: *const sdk.misc.BaseDir,
+        io: std.Io,
         host_dx_context: *const dx.HostContext,
     ) Self {
         std.log.debug("Initializing DirectX context...", .{});
@@ -51,7 +52,7 @@ pub const EventBuss = struct {
 
         const ui_context = if (dx_context) |*dxc| block: {
             std.log.debug("Initializing UI context...", .{});
-            if (UiContext.init(allocator, base_dir, dxc)) |context| {
+            if (UiContext.init(allocator, io, dxc)) |context| {
                 std.log.info("UI context initialized.", .{});
                 break :block context;
             } else |err| {
@@ -63,10 +64,10 @@ pub const EventBuss = struct {
 
         std.log.debug("Spawning settings loading task...", .{});
         const settings_task = SettingsTask.spawn(allocator, struct {
-            fn call(dir: *const sdk.misc.BaseDir) model.Settings {
+            fn call(io_copy: std.Io) model.Settings {
                 std.log.info("Settings loading task spawned.", .{});
                 std.log.debug("Loading settings...", .{});
-                if (model.Settings.load(dir)) |settings| {
+                if (model.Settings.load(io_copy)) |settings| {
                     std.log.info("Settings loaded.", .{});
                     return settings;
                 } else |err_1| {
@@ -75,7 +76,7 @@ pub const EventBuss = struct {
                     const default_settings = model.Settings{};
                     if (err_1 == error.FileNotFound) {
                         std.log.info("Saving default settings...", .{});
-                        if (default_settings.save(dir)) {
+                        if (default_settings.save(io_copy)) {
                             std.log.info("Default settings saved.", .{});
                         } else |err_2| {
                             sdk.misc.error_context.append("Failed to save default settings.", .{});
@@ -85,7 +86,7 @@ pub const EventBuss = struct {
                     return default_settings;
                 }
             }
-        }.call, .{base_dir}) catch |err| block: {
+        }.call, .{io}) catch |err| block: {
             sdk.misc.error_context.append("Failed to spawn settings loading task. Using default settings.", .{});
             sdk.misc.error_context.logWarning(err);
             break :block SettingsTask.createCompleted(.{});
@@ -93,10 +94,10 @@ pub const EventBuss = struct {
 
         std.log.debug("Spawning latest version fetching task...", .{});
         const latest_version_task = LatestVersionTask.spawn(allocator, struct {
-            fn call(alloc: std.mem.Allocator) ?sdk.misc.Version {
+            fn call(alloc: std.mem.Allocator, io_copy: std.Io) ?sdk.misc.Version {
                 std.log.info("Latest version fetching task spawned.", .{});
                 std.log.debug("Fetching latest version...", .{});
-                if (sdk.misc.Version.fetchLatest(alloc)) |latest_version| {
+                if (sdk.misc.Version.fetchLatest(alloc, io_copy)) |latest_version| {
                     std.log.info("Latest version fetched: {f}", .{latest_version});
                     return latest_version;
                 } else |err| {
@@ -105,7 +106,7 @@ pub const EventBuss = struct {
                     return null;
                 }
             }
-        }.call, .{allocator}) catch |err| block: {
+        }.call, .{ allocator, io }) catch |err| block: {
             sdk.misc.error_context.append("Failed to spawn latest version fetching task.", .{});
             sdk.misc.error_context.logError(err);
             break :block LatestVersionTask.createCompleted(null);
@@ -140,10 +141,10 @@ pub const EventBuss = struct {
 
     pub fn deinit(
         self: *Self,
-        base_dir: *const sdk.misc.BaseDir,
+        io: std.Io,
         host_dx_context: *const dx.HostContext,
     ) void {
-        _ = base_dir;
+        _ = io;
         const dx_context = if (self.managed_dx_context) |*mdxc| block: {
             break :block dx.Context.fromHostAndManaged(host_dx_context, mdxc);
         } else null;
@@ -152,11 +153,11 @@ pub const EventBuss = struct {
         self.rendering.deinit(if (dx_context) |*dxc| dxc else null);
         std.log.info("Rendering de-initialized.", .{});
 
-        std.log.debug("Deinitializing UI...", .{});
+        std.log.debug("De-initializing UI...", .{});
         self.ui.deinit();
-        std.log.info("UI deinitialized.", .{});
+        std.log.info("UI de-initialized.", .{});
 
-        std.log.debug("Joining latest version fetching loading task...", .{});
+        std.log.debug("Joining latest version fetching task...", .{});
         _ = self.latest_version_task.join();
         std.log.info("Latest version fetching task joined.", .{});
 
@@ -194,25 +195,26 @@ pub const EventBuss = struct {
 
     pub fn tick(
         self: *Self,
-        base_dir: *const sdk.misc.BaseDir,
+        io: std.Io,
         game_memory: *game.Memory(build_info.game),
         input_override: *game.InputOverride,
     ) void {
         game_memory.updateAddresses();
         const settings = self.settings_task.peek() orelse return;
-        self.core.tick(base_dir, settings, game_memory, input_override, self, processFrame);
+        self.core.tick(io, settings, game_memory, input_override, self, processFrame);
     }
 
     pub fn draw(
         self: *Self,
-        base_dir: *const sdk.misc.BaseDir,
+        io: std.Io,
         host_dx_context: *const dx.HostContext,
         game_memory_maybe: ?*game.Memory(build_info.game),
+        camera_override: *?model.Camera,
         memory_usage: usize,
     ) void {
-        const delta_time = self.timer.measureDeltaTime();
-        self.core.update(delta_time, self, processFrame);
-        self.ui.update(delta_time, &self.core.controller);
+        const delta_time = self.timer.measureDeltaTime(io);
+        self.core.update(delta_time, game_memory_maybe, camera_override, self, processFrame);
+        self.ui.update(io, delta_time, &self.core.controller);
 
         const managed_dx_context = if (self.managed_dx_context) |*context| context else return;
         var dx_context = dx.Context.fromHostAndManaged(host_dx_context, managed_dx_context);
@@ -228,11 +230,13 @@ pub const EventBuss = struct {
         ui_context.newFrame();
         imgui.igGetIO_Nil().*.MouseDrawCursor = true;
         self.ui.draw(
-            base_dir,
+            io,
+            delta_time,
             ui_context.file_dialog_context,
             settings_maybe,
             game_memory_maybe,
             &self.core.controller,
+            &self.core.camera_director,
             &self.core.tool_assisted_input,
             &self.core.tai_recording_coordinator,
             latest_version,
@@ -263,10 +267,8 @@ pub const EventBuss = struct {
 
     pub fn beforeResize(
         self: *Self,
-        base_dir: *const sdk.misc.BaseDir,
         host_dx_context: *const dx.HostContext,
     ) void {
-        _ = base_dir;
         _ = host_dx_context;
         std.log.debug("De-initializing DirectX buffer contexts...", .{});
         if (self.managed_dx_context) |*context| {
@@ -279,10 +281,8 @@ pub const EventBuss = struct {
 
     pub fn afterResize(
         self: *Self,
-        base_dir: *const sdk.misc.BaseDir,
         host_dx_context: *const dx.HostContext,
     ) void {
-        _ = base_dir;
         std.log.debug("Re-initializing DirectX buffer contexts...", .{});
         if (self.managed_dx_context) |*context| {
             if (context.reinitBufferContexts(host_dx_context)) {
@@ -307,5 +307,14 @@ pub const EventBuss = struct {
             return context.processWindowMessage(window, u_msg, w_param, l_param);
         }
         return null;
+    }
+
+    pub fn processKeyboardInput(self: *Self, input: *const w32.RAWKEYBOARD) KeyboardInputAction {
+        if (self.ui_context) |*context| {
+            if (context.shouldBlockRawKeyboardInput(input)) {
+                return .block;
+            }
+        }
+        return .pass_through;
     }
 };

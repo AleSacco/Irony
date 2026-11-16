@@ -12,7 +12,7 @@ pub const ViewDirection = enum {
 };
 
 pub const View = struct {
-    camera: ui.Camera = .{},
+    camera: ui.ViewCamera = .{},
     hurt_cylinders: ui.HurtCylinders = .{},
     hit_lines: ui.HitLines = .{},
     measure_tool: ui.MeasureTool = .{},
@@ -73,6 +73,7 @@ pub const View = struct {
         const shapes = ui.Shapes{ ._3d = .{
             .renderer = shape_renderer,
             .thickness_scale = settings.general.rendering_3d.thickness_scale,
+            .fill_alpha = settings.general.rendering_3d.fill_alpha,
         } };
         ui.drawIngameCamera(&shapes, &settings.ingame_camera, frame);
         ui.drawCollisionSpheres(&shapes, &settings.collision_spheres, frame);

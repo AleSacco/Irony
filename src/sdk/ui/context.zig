@@ -6,6 +6,7 @@ const imgui = @import("imgui");
 const misc = @import("../misc/root.zig");
 const dx11 = @import("../dx11/root.zig");
 const dx12 = @import("../dx12/root.zig");
+const os = @import("../os/root.zig");
 const ui = @import("root.zig");
 
 const font_file = @embedFile("font.ttf");
@@ -26,7 +27,7 @@ pub fn Context(comptime rendering_api: build_info.RenderingApi) type {
 
         const Self = @This();
 
-        pub fn init(allocator: std.mem.Allocator, base_dir: ?*const misc.BaseDir, dx_context: *const dx.Context) !Self {
+        pub fn init(allocator: std.mem.Allocator, io_maybe: ?std.Io, dx_context: *const dx.Context) !Self {
             const old_allocator = ui.getAllocator();
             ui.setAllocator(allocator);
             errdefer ui.setAllocator(old_allocator);
@@ -37,11 +38,27 @@ pub fn Context(comptime rendering_api: build_info.RenderingApi) type {
             };
             errdefer imgui.igDestroyContext(imgui_context);
 
-            const ini_file_path = if (base_dir) |dir| (dir.allocPath(allocator, "imgui.ini") catch |err| b: {
-                misc.error_context.append("Failed to allocate imgui.ini file path.", .{});
-                misc.error_context.logError(err);
-                break :b null;
-            }) else null;
+            const ini_file_path = if (io_maybe) |io| block: {
+                var buffer: [os.max_file_path_length]u8 = undefined;
+                const len = std.Io.Dir.cwd().realPath(io, &buffer) catch |err| {
+                    misc.error_context.new("Failed to get base directory.", .{});
+                    misc.error_context.append("Failed to set imgui.ini file path.", .{});
+                    misc.error_context.logError(err);
+                    break :block null;
+                };
+                const base = buffer[0..len];
+                break :block std.fmt.allocPrintSentinel(
+                    allocator,
+                    "{s}{c}{s}",
+                    .{ base, std.fs.path.sep, "imgui.ini" },
+                    0,
+                ) catch |err| {
+                    misc.error_context.new("Failed to allocate the absolute path.", .{});
+                    misc.error_context.append("Failed to set imgui.ini file path.", .{});
+                    misc.error_context.logError(err);
+                    break :block null;
+                };
+            } else null;
             errdefer if (ini_file_path) |path| {
                 allocator.free(path);
             };
@@ -148,6 +165,7 @@ pub fn Context(comptime rendering_api: build_info.RenderingApi) type {
                 misc.error_context.new("IGFD_Create returned null.", .{});
                 return error.ImguiError;
             };
+            errdefer imgui.IGFD_Destroy(file_dialog_context);
 
             const test_allocation = if (builtin.is_test) try std.testing.allocator.create(u8) else {};
 
@@ -170,12 +188,10 @@ pub fn Context(comptime rendering_api: build_info.RenderingApi) type {
                 .dx12 => ui.backend.ImGui_ImplDX12_Shutdown(),
             }
             ui.backend.ImGui_ImplWin32_Shutdown();
-            imgui.igGetIO_Nil().*.ConfigInputTrickleEventQueue = true;
-            imgui.igGetIO_Nil().*.IniFilename = null;
+            imgui.igDestroyContext(self.imgui_context);
             if (self.ini_file_path) |path| {
                 self.allocator.free(path);
             }
-            imgui.igDestroyContext(self.imgui_context);
             ui.setAllocator(self.old_allocator);
 
             if (builtin.is_test) {
@@ -224,11 +240,36 @@ pub fn Context(comptime rendering_api: build_info.RenderingApi) type {
             if (is_mouse_event and imgui.igGetIO_Nil().*.WantCaptureMouse) {
                 return 1;
             }
-            const is_keyboard_event = u_msg >= w32.WM_KEYFIRST and u_msg <= w32.WM_KEYLAST;
-            if (is_keyboard_event and imgui.igGetIO_Nil().*.WantCaptureKeyboard) {
-                return 1;
+            switch (u_msg) {
+                w32.WM_KEYDOWN, w32.WM_SYSKEYDOWN => if (shouldBlockKeyPress(w_param, l_param)) {
+                    return 1;
+                },
+                w32.WM_KEYUP, w32.WM_SYSKEYUP => {},
+                else => {
+                    const is_keyboard_event = u_msg >= w32.WM_KEYFIRST and u_msg <= w32.WM_KEYLAST;
+                    if (is_keyboard_event and imgui.igGetIO_Nil().*.WantCaptureKeyboard) {
+                        return 1;
+                    }
+                },
             }
             return null;
+        }
+
+        pub fn shouldBlockRawKeyboardInput(self: *const Self, input: *const w32.RAWKEYBOARD) bool {
+            if ((input.Flags & w32.RI_KEY_BREAK) != 0) {
+                return false;
+            }
+            imgui.igSetCurrentContext(self.imgui_context);
+            const event = ui.keyEventFromRawKeyboard(input);
+            return shouldBlockKeyPress(event.w_param, event.l_param);
+        }
+
+        fn shouldBlockKeyPress(w_param: w32.WPARAM, l_param: w32.LPARAM) bool {
+            if (imgui.igGetIO_Nil().*.WantCaptureKeyboard) {
+                return true;
+            }
+            const key_chord = ui.keyChordFromKeyEvent(w_param, l_param) orelse return false;
+            return ui.hasShortcutRoute(key_chord);
         }
     };
 }
@@ -252,7 +293,7 @@ test "should render hello world successfully when rendering api is dx11" {
     for (0..10) |_| {
         ui_context.newFrame();
         if (imgui.igBegin("Hello world.", null, 0)) {
-            imgui.igText("Hello world.", .{});
+            imgui.igText("Hello world.");
         }
         imgui.igEnd();
         ui_context.endFrame();
@@ -281,7 +322,7 @@ test "should render hello world successfully when rendering api is dx12" {
     for (0..10) |_| {
         ui_context.newFrame();
         if (imgui.igBegin("Hello world.", null, 0)) {
-            imgui.igText("Hello world.", .{});
+            imgui.igText("Hello world.");
         }
         imgui.igEnd();
         ui_context.endFrame();

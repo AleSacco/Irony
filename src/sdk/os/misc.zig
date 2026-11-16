@@ -44,7 +44,7 @@ pub fn filePathToDirectoryPath(path: []const u8) []const u8 {
 }
 
 pub fn getFullPath(full_path_buffer: *[os.max_file_path_length]u8, short_path: []const u8) !usize {
-    var short_path_buffer_utf16 = [_:0]u16{0} ** os.max_file_path_length;
+    var short_path_buffer_utf16: [os.max_file_path_length:0]u16 = @splat(0);
     const short_path_size = std.unicode.utf8ToUtf16Le(&short_path_buffer_utf16, short_path) catch |err| {
         misc.error_context.new("Failed to convert UTF8 string \"{s}\" to UTF16-LE.", .{short_path});
         return err;
@@ -97,7 +97,7 @@ pub fn getExecutableTimestamp() !u32 {
     };
     const dos_header: *align(1) const w32.IMAGE_DOS_HEADER = @ptrCast(handle);
     if (!os.isMemoryReadable(@intFromPtr(dos_header), @sizeOf(w32.IMAGE_DOS_HEADER))) {
-        misc.error_context.new("Dos header memory not readable.", .{});
+        misc.error_context.new("DOS header memory not readable.", .{});
         return error.NotReadable;
     }
     if (dos_header.e_magic != w32.IMAGE_DOS_SIGNATURE) {
@@ -151,9 +151,9 @@ test "getFullPath should produce correct full path" {
     try testing.expectStringEndsWith(full_path, "\\test_1\\test_2\\test_3.txt");
 }
 
-test "getExecutableTimestamp should return a value grater then 1 day ago and less or equal then now" {
+test "getExecutableTimestamp should return a value greater than 1 day ago and less than or equal to now" {
     const timestamp = try getExecutableTimestamp();
-    const now: u32 = @intCast(@divTrunc(std.time.milliTimestamp(), std.time.ms_per_s));
+    const now: u32 = @intCast(std.Io.Clock.real.now(testing.io).toSeconds());
     const day_ago = now - std.time.s_per_day;
     try testing.expect(timestamp > day_ago);
     try testing.expect(timestamp <= now);

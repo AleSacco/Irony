@@ -21,6 +21,7 @@ pub const Core = struct {
     tool_assisted_input: core.ToolAssistedInput,
     controller: core.Controller,
     tai_recording_coordinator: core.TaiRecordingCoordinator,
+    camera_director: core.CameraDirector,
 
     const Self = @This();
 
@@ -36,6 +37,7 @@ pub const Core = struct {
             .tool_assisted_input = core.ToolAssistedInput.init(allocator),
             .controller = core.Controller.init(allocator),
             .tai_recording_coordinator = .{},
+            .camera_director = .{},
         };
     }
 
@@ -46,7 +48,7 @@ pub const Core = struct {
 
     pub fn tick(
         self: *Self,
-        base_dir: *const sdk.misc.BaseDir,
+        io: std.Io,
         settings: *const model.Settings,
         game_memory: *const game.Memory(build_info.game),
         input_override: *game.InputOverride,
@@ -61,7 +63,7 @@ pub const Core = struct {
         self.hit_detector.detect(&frame);
         self.move_detector.detect(&frame);
         self.move_measurer.measure(&frame);
-        self.automation.processFrame(base_dir, &settings.automation, &self.controller, &frame);
+        self.automation.processFrame(io, &settings.automation, &self.controller, &frame);
         self.tool_assisted_input.processFrame(input_override, frame.source);
         self.controller.processFrame(&frame, context, processFrame);
         self.tai_recording_coordinator.processFrame(&self.tool_assisted_input, &self.controller);
@@ -70,10 +72,22 @@ pub const Core = struct {
     pub fn update(
         self: *Self,
         delta_time: f32,
+        game_memory_maybe: ?*const game.Memory(build_info.game),
+        camera_override: *?model.Camera,
         context: anytype,
         processFrame: *const fn (context: @TypeOf(context), frame: *const model.Frame) void,
     ) void {
         self.automation.update(&self.controller);
         self.controller.update(delta_time, context, processFrame);
+        const source = if (game_memory_maybe) |game_memory| block: {
+            break :block game.Capturer(build_info.game).captureSource(
+                game_memory.player_1.toConstPointer(),
+                game_memory.player_2.toConstPointer(),
+                game_memory.match.toConstPointer(),
+                game_memory.replay_mode.toConstPointer(),
+                &game_memory.functions,
+            );
+        } else null;
+        self.camera_director.update(source, camera_override, self.controller.getCurrentFrame());
     }
 };

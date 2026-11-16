@@ -39,7 +39,7 @@ pub fn ErrorContext(comptime config: ErrorContextConfig) type {
         }
 
         pub inline fn append(self: *Self, comptime fmt: []const u8, args: anytype) void {
-            if (@typeInfo(@TypeOf(.{args})).@"struct".fields[0].is_comptime) {
+            if (@typeInfo(@TypeOf(.{args})).@"struct".field_attrs[0].@"comptime") {
                 self.staticAppend(fmt, args);
             } else {
                 self.dynamicAppend(fmt, args);
@@ -77,7 +77,7 @@ pub fn ErrorContext(comptime config: ErrorContextConfig) type {
             }
             self.addDynamicItem(&self.buffer, fmt, args) catch {
                 if (!builtin.is_test) {
-                    std.log.err("Failed to add item to error context. Error message is larger then the buffer.", .{});
+                    std.log.err("Failed to add item to error context. Error message is larger than the buffer.", .{});
                 }
             };
         }
@@ -123,6 +123,14 @@ pub fn ErrorContext(comptime config: ErrorContextConfig) type {
 
         pub fn clear(self: *Self) void {
             self.items.clear();
+        }
+
+        pub fn save(self: *const Self) Self {
+            return self.*;
+        }
+
+        pub fn restore(self: *Self, snapshot: *const Self) void {
+            self.* = snapshot.*;
         }
 
         pub fn logError(self: *const Self, err: anyerror) void {
@@ -192,6 +200,33 @@ test "should correctly format error message" {
     try testing.expectEqualStrings("No items inside the error context.", message_3);
 }
 
+test "restore should bring back the state captured by save" {
+    var context = ErrorContext(.{
+        .buffer_size = 32,
+        .max_items = 64,
+    }){};
+    var number: i32 = 0;
+
+    number = 1;
+    context.new("Error: {}", .{number});
+    context.append("Static error.", .{});
+    number = 2;
+    context.append("Error: {}", .{number});
+    const saved = context.save();
+
+    number = 3;
+    context.new("Error: {}", .{number});
+    number = 4;
+    context.append("Error: {}", .{number});
+    number = 5;
+    context.append("Error: {}", .{number});
+    context.restore(&saved);
+
+    const message = try std.fmt.allocPrint(testing.allocator, "{f}", .{context});
+    defer testing.allocator.free(message);
+    try testing.expectEqualStrings("1) Error: 2\n2) Static error.\n3) Error: 1\n", message);
+}
+
 test "should discard earliest items when exceeding max items" {
     var context = ErrorContext(.{
         .buffer_size = 4096,
@@ -243,7 +278,7 @@ test "should discard earliest items when exceeding buffer size" {
     try testing.expectEqualStrings("1) Error: 123\n", message_3);
 }
 
-test "should discard all items when message is larger then the buffer" {
+test "should discard all items when message is larger than the buffer" {
     var context = ErrorContext(.{
         .buffer_size = 16,
         .max_items = 64,

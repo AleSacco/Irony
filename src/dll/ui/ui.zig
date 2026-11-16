@@ -45,18 +45,20 @@ pub const Ui = struct {
         self.main_window.processFrame(settings, frame);
     }
 
-    pub fn update(self: *Self, delta_time: f32, controller: *core.Controller) void {
+    pub fn update(self: *Self, io: std.Io, delta_time: f32, controller: *core.Controller) void {
         sdk.ui.toasts.update(delta_time);
-        self.main_window.update(delta_time, controller);
+        self.main_window.update(io, delta_time, controller);
     }
 
     pub fn draw(
         self: *Self,
-        base_dir: *const sdk.misc.BaseDir,
+        io: std.Io,
+        delta_time: f32,
         file_dialog_context: *imgui.ImGuiFileDialog,
         settings_maybe: ?*model.Settings,
         game_memory_maybe: ?*const game.Memory(build_info.game),
         controller: *core.Controller,
+        camera_director: *core.CameraDirector,
         tai: *core.ToolAssistedInput,
         tai_coordinator: *core.TaiRecordingCoordinator,
         latest_version: ui.LatestVersion,
@@ -96,6 +98,8 @@ pub const Ui = struct {
         self.handleOpenKey();
         self.main_window.handleKeybinds(controller);
         ui.TaiWindow.handleKeybinds(tai);
+        ui.handleCameraShortcuts(camera_director);
+        ui.handleFreeLookCameraInput(camera_director, delta_time, &settings.free_look_camera);
 
         if (!self.is_open) {
             return;
@@ -105,19 +109,20 @@ pub const Ui = struct {
 
         self.main_window.draw(
             self,
-            base_dir,
+            io,
             file_dialog_context,
             controller,
+            camera_director,
             settings,
             latest_version,
             memory_usage,
         );
         self.tai_window.draw(controller, tai, tai_coordinator);
-        self.settings_window.draw(base_dir, settings);
+        self.settings_window.draw(io, settings);
         self.logs_window.draw(dll.buffer_logger);
         self.game_memory_window.draw(build_info.game, game_memory);
         self.frame_window.draw(controller.getCurrentFrame());
-        self.about_window.draw();
+        self.about_window.draw(io);
     }
 
     pub fn draw3D(
@@ -141,11 +146,14 @@ pub const Ui = struct {
     }
 
     fn handleOpenKey(self: *Self) void {
-        const mods = imgui.igGetIO_Nil().*.KeyMods;
-        if (mods != 0 and mods != imgui.ImGuiMod_Shift) {
-            return;
-        }
-        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_Tab, false)) {
+        _ = imgui.igShortcut_Nil(imgui.ImGuiKey_Tab, imgui.ImGuiInputFlags_RouteGlobal);
+        _ = imgui.igShortcut_Nil(imgui.ImGuiMod_Shift | imgui.ImGuiKey_Tab, imgui.ImGuiInputFlags_RouteGlobal);
+        const tab_pressed = imgui.igShortcut_Nil(imgui.ImGuiKey_Tab, imgui.ImGuiInputFlags_RouteAlways);
+        const shift_tab_pressed = imgui.igShortcut_Nil(
+            imgui.ImGuiMod_Shift | imgui.ImGuiKey_Tab,
+            imgui.ImGuiInputFlags_RouteAlways,
+        );
+        if (!tab_pressed and !shift_tab_pressed) {
             return;
         }
         self.is_open = !self.is_open;

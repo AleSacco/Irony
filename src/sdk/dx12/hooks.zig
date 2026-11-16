@@ -33,6 +33,8 @@ pub fn Hooks(onPresent: *const OnHookEvent, beforeResize: *const OnHookEvent, af
             };
             std.log.info("Execute command lists hook created.", .{});
             errdefer {
+                const saved = misc.error_context.save();
+                defer misc.error_context.restore(&saved);
                 execute_command_lists_hook.?.destroy() catch |err| {
                     misc.error_context.append("Failed to destroy execute command lists hook.", .{});
                     misc.error_context.logError(err);
@@ -50,6 +52,8 @@ pub fn Hooks(onPresent: *const OnHookEvent, beforeResize: *const OnHookEvent, af
             };
             std.log.info("Resize buffers hook created.", .{});
             errdefer {
+                const saved = misc.error_context.save();
+                defer misc.error_context.restore(&saved);
                 resize_buffers_hook.?.destroy() catch |err| {
                     misc.error_context.append("Failed to destroy resize buffers hook.", .{});
                     misc.error_context.logError(err);
@@ -67,8 +71,10 @@ pub fn Hooks(onPresent: *const OnHookEvent, beforeResize: *const OnHookEvent, af
             };
             std.log.info("Present hook created.", .{});
             errdefer {
+                const saved = misc.error_context.save();
+                defer misc.error_context.restore(&saved);
                 present_hook.?.destroy() catch |err| {
-                    misc.error_context.append("Failed to destroy present hook hook.", .{});
+                    misc.error_context.append("Failed to destroy present hook.", .{});
                     misc.error_context.logError(err);
                 };
                 present_hook = null;
@@ -96,14 +102,74 @@ pub fn Hooks(onPresent: *const OnHookEvent, beforeResize: *const OnHookEvent, af
             std.log.info("Present hook enabled.", .{});
         }
 
-        pub fn deinit() void {
+        pub fn deinit(io: std.Io) void {
+            std.log.debug("Disabling the present hook...", .{});
+            var is_present_hook_disabled = false;
+            if (present_hook) |hook| {
+                if (hook.disable()) {
+                    is_present_hook_disabled = true;
+                    std.log.info("Present hook disabled.", .{});
+                } else |err| switch (err) {
+                    error.HookDisabled => is_present_hook_disabled = true,
+                    else => {
+                        misc.error_context.append("Failed to disable present hook.", .{});
+                        misc.error_context.logError(err);
+                    },
+                }
+            } else {
+                std.log.debug("Nothing to disable.", .{});
+            }
+
+            std.log.debug("Disabling the resize buffers hook...", .{});
+            var is_resize_buffers_hook_disabled = false;
+            if (resize_buffers_hook) |hook| {
+                if (hook.disable()) {
+                    is_resize_buffers_hook_disabled = true;
+                    std.log.info("Resize buffers hook disabled.", .{});
+                } else |err| switch (err) {
+                    error.HookDisabled => is_resize_buffers_hook_disabled = true,
+                    else => {
+                        misc.error_context.append("Failed to disable resize buffers hook.", .{});
+                        misc.error_context.logError(err);
+                    },
+                }
+            } else {
+                std.log.debug("Nothing to disable.", .{});
+            }
+
+            std.log.debug("Disabling the execute command lists hook...", .{});
+            var is_execute_command_lists_hook_disabled = false;
+            if (execute_command_lists_hook) |hook| {
+                if (hook.disable()) {
+                    is_execute_command_lists_hook_disabled = true;
+                    std.log.info("Execute command lists hook disabled.", .{});
+                } else |err| switch (err) {
+                    error.HookDisabled => is_execute_command_lists_hook_disabled = true,
+                    else => {
+                        misc.error_context.append("Failed to disable execute command lists hook.", .{});
+                        misc.error_context.logError(err);
+                    },
+                }
+            } else {
+                std.log.debug("Nothing to disable.", .{});
+            }
+
+            while (active_hook_calls.load(.seq_cst) > 0) {
+                io.sleep(.fromMilliseconds(10), .awake) catch |err| {
+                    misc.error_context.new("Failed to sleep for 10 ms while waiting on active DX12 hooks.", .{});
+                    misc.error_context.logError(err);
+                };
+            }
+
             std.log.debug("Destroying the present hook...", .{});
             if (present_hook) |hook| {
-                if (hook.destroy()) {
+                if (!is_present_hook_disabled) {
+                    std.log.warn("Skipping the destruction of present hook since disabling it failed.", .{});
+                } else if (hook.destroy()) {
                     present_hook = null;
                     std.log.info("Present hook destroyed.", .{});
                 } else |err| {
-                    misc.error_context.append("Failed destroy present hook.", .{});
+                    misc.error_context.append("Failed to destroy present hook.", .{});
                     misc.error_context.logError(err);
                 }
             } else {
@@ -112,11 +178,13 @@ pub fn Hooks(onPresent: *const OnHookEvent, beforeResize: *const OnHookEvent, af
 
             std.log.debug("Destroying the resize buffers hook...", .{});
             if (resize_buffers_hook) |hook| {
-                if (hook.destroy()) {
+                if (!is_resize_buffers_hook_disabled) {
+                    std.log.warn("Skipping the destruction of resize buffers hook since disabling it failed.", .{});
+                } else if (hook.destroy()) {
                     resize_buffers_hook = null;
                     std.log.info("Resize buffers hook destroyed.", .{});
                 } else |err| {
-                    misc.error_context.append("Failed destroy resize buffers hook.", .{});
+                    misc.error_context.append("Failed to destroy resize buffers hook.", .{});
                     misc.error_context.logError(err);
                 }
             } else {
@@ -125,24 +193,26 @@ pub fn Hooks(onPresent: *const OnHookEvent, beforeResize: *const OnHookEvent, af
 
             std.log.debug("Destroying the execute command lists hook...", .{});
             if (execute_command_lists_hook) |hook| {
-                if (hook.destroy()) {
+                if (!is_execute_command_lists_hook_disabled) {
+                    std.log.warn(
+                        "Skipping the destruction of execute command lists hook since disabling it failed.",
+                        .{},
+                    );
+                } else if (hook.destroy()) {
                     execute_command_lists_hook = null;
                     std.log.info("Execute command lists hook destroyed.", .{});
                 } else |err| {
-                    misc.error_context.append("Failed destroy execute command lists hook.", .{});
+                    misc.error_context.append("Failed to destroy execute command lists hook.", .{});
                     misc.error_context.logError(err);
                 }
             } else {
                 std.log.debug("Nothing to destroy.", .{});
             }
 
-            while (active_hook_calls.load(.seq_cst) > 0) {
-                std.Thread.sleep(10 * std.time.ns_per_ms);
-            }
-
             std.log.debug("Releasing the DX12 command queue...", .{});
             if (g_command_queue) |command_queue| {
                 _ = command_queue.IUnknown.Release();
+                g_command_queue = null;
                 std.log.info("DX12 command queue released.", .{});
             } else {
                 std.log.debug("Nothing to release.", .{});
@@ -203,6 +273,7 @@ pub fn Hooks(onPresent: *const OnHookEvent, beforeResize: *const OnHookEvent, af
                 misc.error_context.logError(err);
                 return present_hook.?.original(swap_chain, sync_interval, flags);
             };
+            defer _ = device.IUnknown.Release();
             const context = dx12.HostContext{
                 .window = window,
                 .device = device,
@@ -260,6 +331,7 @@ pub fn Hooks(onPresent: *const OnHookEvent, beforeResize: *const OnHookEvent, af
                     swap_chain_flags,
                 );
             };
+            defer _ = device.IUnknown.Release();
 
             const context = dx12.HostContext{
                 .window = window,
@@ -322,7 +394,7 @@ test "should call correct callbacks at correct times" {
 
     const hooks = Hooks(OnPresent.call, BeforeResize.call, AfterResize.call);
     try hooks.init();
-    defer hooks.deinit();
+    defer hooks.deinit(testing.io);
 
     try testing.expectEqual(0, OnPresent.times_called);
     try testing.expectEqual(0, BeforeResize.times_called);

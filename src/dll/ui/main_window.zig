@@ -33,11 +33,11 @@ pub const MainWindow = struct {
         self.details.processFrame(&settings.details, frame);
     }
 
-    pub fn update(self: *Self, delta_time: f32, controller: *core.Controller) void {
+    pub fn update(self: *Self, io: std.Io, delta_time: f32, controller: *core.Controller) void {
         self.match_bar.update(delta_time);
         self.view.update(delta_time);
         self.details.update(delta_time);
-        self.file_menu.update(controller);
+        self.file_menu.update(io, controller);
     }
 
     pub fn handleKeybinds(self: *Self, controller: *core.Controller) void {
@@ -47,9 +47,10 @@ pub const MainWindow = struct {
     pub fn draw(
         self: *Self,
         ui_instance: *ui.Ui,
-        base_dir: *const sdk.misc.BaseDir,
+        io: std.Io,
         file_dialog_context: *imgui.ImGuiFileDialog,
         controller: *core.Controller,
+        camera_director: *core.CameraDirector,
         settings: *model.Settings,
         latest_version: ui.LatestVersion,
         memory_usage: usize,
@@ -71,10 +72,11 @@ pub const MainWindow = struct {
         var title_buffer: [260]u8 = undefined;
         const asterisk = if (controller.contains_unsaved_changes) "*" else "";
         const file_name = if (controller.getFilePath()) |path| sdk.os.pathToFileName(path) else "Untitled";
-        const title = std.fmt.bufPrintZ(
+        const title = std.fmt.bufPrintSentinel(
             &title_buffer,
             build_info.display_name ++ " - {s}{s}###main_window",
             .{ asterisk, file_name },
+            0,
         ) catch build_info.display_name ++ "###main_window";
 
         var windowFlags: c_int = imgui.ImGuiWindowFlags_MenuBar;
@@ -94,9 +96,10 @@ pub const MainWindow = struct {
 
         self.drawMenuBar(
             ui_instance,
-            base_dir,
+            io,
             file_dialog_context,
             controller,
+            camera_director,
             &settings.general.ui,
             latest_version,
             memory_usage,
@@ -161,9 +164,10 @@ pub const MainWindow = struct {
     fn drawMenuBar(
         self: *Self,
         ui_instance: *ui.Ui,
-        base_dir: *const sdk.misc.BaseDir,
+        io: std.Io,
         file_dialog_context: *imgui.ImGuiFileDialog,
         controller: *core.Controller,
+        camera_director: *core.CameraDirector,
         settings: *const model.GeneralSettings.Ui,
         latest_version: ui.LatestVersion,
         memory_usage: usize,
@@ -173,8 +177,9 @@ pub const MainWindow = struct {
         }
         defer imgui.igEndMenuBar();
 
-        self.file_menu.draw(base_dir, file_dialog_context, controller, &ui_instance.is_open);
+        self.file_menu.draw(io, file_dialog_context, controller, &ui_instance.is_open);
         self.view.camera.drawMenuBar();
+        ui.drawCameraMenuBar(camera_director);
         drawWindowMenu(ui_instance);
         drawHelpMenu(ui_instance);
 
@@ -199,15 +204,24 @@ pub const MainWindow = struct {
     }
 
     fn drawWindowMenu(ui_instance: *ui.Ui) void {
+        handleWindowToggleShortcut(
+            imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_T,
+            &ui_instance.tai_window.is_open,
+        );
+        handleWindowToggleShortcut(
+            imgui.ImGuiMod_Ctrl | imgui.ImGuiMod_Alt | imgui.ImGuiKey_S,
+            &ui_instance.settings_window.is_open,
+        );
+
         if (!imgui.igBeginMenu("Window", true)) {
             return;
         }
         defer imgui.igEndMenu();
-        if (imgui.igMenuItem_Bool(ui.TaiWindow.name, null, false, true)) {
+        if (imgui.igMenuItem_Bool(ui.TaiWindow.name, "Ctrl + T", false, true)) {
             ui_instance.tai_window.is_open = true;
             imgui.igSetWindowFocus_Str(ui.TaiWindow.name);
         }
-        if (imgui.igMenuItem_Bool(ui.SettingsWindow.name, null, false, true)) {
+        if (imgui.igMenuItem_Bool(ui.SettingsWindow.name, "Ctrl + Alt + S", false, true)) {
             ui_instance.settings_window.is_open = true;
             imgui.igSetWindowFocus_Str(ui.SettingsWindow.name);
         }
@@ -220,6 +234,16 @@ pub const MainWindow = struct {
             ui_instance.frame_window.is_open = true;
             imgui.igSetWindowFocus_Str(ui.FrameWindow.name);
         }
+    }
+
+    fn handleWindowToggleShortcut(key_chord: imgui.ImGuiKeyChord, is_open: *bool) void {
+        if (imgui.igGetTopMostPopupModal() != null) {
+            return;
+        }
+        if (!imgui.igShortcut_Nil(key_chord, imgui.ImGuiInputFlags_RouteGlobal)) {
+            return;
+        }
+        is_open.* = !is_open.*;
     }
 
     fn drawHelpMenu(ui_instance: *ui.Ui) void {

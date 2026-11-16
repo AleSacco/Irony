@@ -4,15 +4,19 @@ const sdk = @import("../sdk/root.zig");
 pub fn runProcessLoop(
     comptime process_names: []const []const u8,
     access_rights: sdk.os.Process.AccessRights,
-    interval_ns: u64,
+    io: std.Io,
+    interval_duration: std.Io.Duration,
     context: anytype,
     onProcessOpen: *const fn (context: @TypeOf(context), index: usize, process: *const sdk.os.Process) bool,
     onProcessClose: *const fn (context: @TypeOf(context), index: usize) void,
 ) void {
-    var open_processes = [1]?sdk.os.Process{null} ** process_names.len;
+    var open_processes: [process_names.len]?sdk.os.Process = @splat(null);
     while (true) {
         runLoopLogic(&open_processes, process_names, access_rights, context, onProcessOpen, onProcessClose);
-        std.Thread.sleep(interval_ns);
+        io.sleep(interval_duration, .awake) catch |err| {
+            sdk.misc.error_context.new("Failed to sleep in the process loop.", .{});
+            sdk.misc.error_context.logError(err);
+        };
     }
 }
 
@@ -41,7 +45,7 @@ fn runProcessLogic(
     if (open_process.*) |process| {
         std.log.debug("Checking if the process (PID = {f}) is still running...", .{process.id});
         const still_running = process.isStillRunning() catch |err| c: {
-            sdk.misc.error_context.append("Failed to figure out if process (PID={f}) is still running.", .{process.id});
+            sdk.misc.error_context.append("Failed to figure out if process (PID = {f}) is still running.", .{process.id});
             sdk.misc.error_context.logError(err);
             break :c false;
         };
@@ -57,7 +61,7 @@ fn runProcessLogic(
         if (process.close()) {
             std.log.info("Process closed successfully.", .{});
         } else |err| {
-            sdk.misc.error_context.append("Failed close process with PID: {f}", .{process.id});
+            sdk.misc.error_context.append("Failed to close process with PID: {f}", .{process.id});
             sdk.misc.error_context.logError(err);
         }
         open_process.* = null;
@@ -92,7 +96,7 @@ fn runProcessLogic(
             if (process.close()) {
                 std.log.info("Process closed successfully.", .{});
             } else |err| {
-                sdk.misc.error_context.append("Failed close process with PID: {f}", .{process.id});
+                sdk.misc.error_context.append("Failed to close process with PID: {f}", .{process.id});
                 sdk.misc.error_context.logError(err);
             }
         }
@@ -101,9 +105,10 @@ fn runProcessLogic(
 
 const testing = std.testing;
 const w32 = @import("win32").everything;
+const WinIo = @import("win_io");
 const w = std.unicode.utf8ToUtf16LeStringLiteral;
 
-test "should do nothing when process no process is found" {
+test "should do nothing when no process is found" {
     const OnProcessOpen = struct {
         var times_called: usize = 0;
         fn call(context: void, index: usize, process: *const sdk.os.Process) bool {
@@ -139,9 +144,12 @@ test "should do nothing when process no process is found" {
 }
 
 test "should open process when process exists and onProcessOpen returns true" {
-    var wait_process = std.process.Child.init(&.{"./test_assets/wait.exe"}, testing.allocator);
-    try wait_process.spawn();
-    defer _ = wait_process.kill() catch @panic("Failed to kill the wait process.");
+    var win_io = WinIo.init(testing.allocator, .{});
+    defer win_io.deinit();
+    const io = win_io.io();
+
+    var wait_process = try std.process.spawn(io, .{ .argv = &.{"wait.exe"} });
+    defer wait_process.kill(io);
     const pid = w32.GetProcessId(wait_process.id);
 
     const OnProcessOpen = struct {
@@ -192,9 +200,12 @@ test "should open process when process exists and onProcessOpen returns true" {
 }
 
 test "should open and close process when process exists and onProcessOpen returns false" {
-    var wait_process = std.process.Child.init(&.{"./test_assets/wait.exe"}, testing.allocator);
-    try wait_process.spawn();
-    defer _ = wait_process.kill() catch @panic("Failed to kill the wait process.");
+    var win_io = WinIo.init(testing.allocator, .{});
+    defer win_io.deinit();
+    const io = win_io.io();
+
+    var wait_process = try std.process.spawn(io, .{ .argv = &.{"wait.exe"} });
+    defer wait_process.kill(io);
     const pid = w32.GetProcessId(wait_process.id);
 
     const OnProcessOpen = struct {
@@ -241,8 +252,11 @@ test "should open and close process when process exists and onProcessOpen return
 }
 
 test "should close process when process stops running" {
-    var wait_process = std.process.Child.init(&.{"./test_assets/wait.exe"}, testing.allocator);
-    try wait_process.spawn();
+    var win_io = WinIo.init(testing.allocator, .{});
+    defer win_io.deinit();
+    const io = win_io.io();
+
+    var wait_process = try std.process.spawn(io, .{ .argv = &.{"wait.exe"} });
     const pid = w32.GetProcessId(wait_process.id);
 
     const OnProcessOpen = struct {
@@ -280,7 +294,7 @@ test "should close process when process stops running" {
             OnProcessClose.call,
         );
     }
-    _ = try wait_process.kill();
+    wait_process.kill(io);
     for (0..3) |_| {
         runLoopLogic(
             &open_processes,

@@ -44,12 +44,10 @@ pub const PatternCache = struct {
                 misc.error_context.new("Cached address is outside of memory range.", .{});
                 return error.NotFound;
             }
-            const address = @addWithOverflow(self.memory_range.base_address, offset);
-            if (address[1] == 1) {
+            return std.math.add(usize, self.memory_range.base_address, offset) catch |err| {
                 misc.error_context.new("Memory address overflow.", .{});
-                return error.NotFound;
-            }
-            return address[0];
+                return err;
+            };
         }
         const address = pattern.findAddress(self.memory_range) catch |err_1| {
             if (err_1 == error.NotFound) {
@@ -59,19 +57,18 @@ pub const PatternCache = struct {
             }
             return err_1;
         };
-        const offset = @subWithOverflow(address, self.memory_range.base_address);
-        if (offset[1] == 1) {
+        const offset = std.math.sub(usize, address, self.memory_range.base_address) catch {
             std.log.warn("Failed to put memory pattern \"{f}\" into cache. Memory offset underflow.", .{pattern});
             return address;
-        }
-        self.map.put(pattern.*, offset[0]) catch |err| {
+        };
+        self.map.put(pattern.*, offset) catch |err| {
             std.log.warn("Failed to put memory pattern \"{f}\" into cache. [{}]", .{ pattern, err });
         };
         return address;
     }
 
-    pub fn load(self: *Self, file_path: []const u8, version_id: u32) !void {
-        const file_data = std.fs.cwd().readFileAlloc(self.allocator, file_path, 131072) catch |err| {
+    pub fn load(self: *Self, io: std.Io, file_path: []const u8, version_id: u32) !void {
+        const file_data = std.Io.Dir.cwd().readFileAlloc(io, file_path, self.allocator, .limited(131072)) catch |err| {
             misc.error_context.new("Failed to read file: {s}", .{file_path});
             return err;
         };
@@ -109,8 +106,8 @@ pub const PatternCache = struct {
         }
     }
 
-    pub fn save(self: *const Self, file_path: []const u8, version_id: u32) !void {
-        const file_data = std.fs.cwd().readFileAlloc(self.allocator, file_path, 131072) catch null;
+    pub fn save(self: *const Self, io: std.Io, file_path: []const u8, version_id: u32) !void {
+        const file_data = std.Io.Dir.cwd().readFileAlloc(io, file_path, self.allocator, .limited(131072)) catch null;
         defer if (file_data) |data| {
             self.allocator.free(data);
         };
@@ -160,7 +157,7 @@ pub const PatternCache = struct {
         };
         defer self.allocator.free(new_file_data);
 
-        std.fs.cwd().writeFile(.{ .sub_path = file_path, .data = new_file_data }) catch |err| {
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = file_path, .data = new_file_data }) catch |err| {
             misc.error_context.new("Failed to write the data to file: {s}", .{file_path});
             return err;
         };
@@ -210,9 +207,11 @@ test "save/load should save/load the cache state to/from a file" {
     try testing.expectEqual(@intFromPtr(&data[4]), cache_1.findAddress(&pattern_1));
     try testing.expectEqual(@intFromPtr(&data[5]), cache_1.findAddress(&pattern_2));
 
-    try cache_1.save("./test_assets/cache.json", 123);
-    defer std.fs.cwd().deleteFile("./test_assets/cache.json") catch @panic("Failed to cleanup test file.");
-    try cache_2.load("./test_assets/cache.json", 123);
+    try cache_1.save(testing.io, "cache.json", 123);
+    defer std.Io.Dir.cwd().deleteFile(testing.io, "cache.json") catch {
+        @panic("Failed to clean up test file.");
+    };
+    try cache_2.load(testing.io, "cache.json", 123);
 
     data[4] = 0x44;
     data[5] = 0x55;
@@ -236,12 +235,14 @@ test "save/load should work correctly when multiple version ids are inside the f
     try testing.expectEqual(@intFromPtr(&data[5]), cache_2.findAddress(&pattern));
     data[5] = 0x05;
 
-    try cache_1.save("./test_assets/cache.json", 111);
-    defer std.fs.cwd().deleteFile("./test_assets/cache.json") catch @panic("Failed to cleanup test file.");
-    try cache_2.save("./test_assets/cache.json", 222);
+    try cache_1.save(testing.io, "cache.json", 111);
+    defer std.Io.Dir.cwd().deleteFile(testing.io, "cache.json") catch {
+        @panic("Failed to clean up test file.");
+    };
+    try cache_2.save(testing.io, "cache.json", 222);
 
-    try cache_1.load("./test_assets/cache.json", 222);
-    try cache_2.load("./test_assets/cache.json", 111);
+    try cache_1.load(testing.io, "cache.json", 222);
+    try cache_2.load(testing.io, "cache.json", 111);
 
     try testing.expectEqual(@intFromPtr(&data[5]), cache_1.findAddress(&pattern));
     try testing.expectEqual(@intFromPtr(&data[4]), cache_2.findAddress(&pattern));

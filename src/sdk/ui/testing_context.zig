@@ -4,7 +4,7 @@ const imgui = @import("imgui");
 const misc = @import("../misc/root.zig");
 const ui = @import("root.zig");
 
-threadlocal var allocator_instance = std.heap.GeneralPurposeAllocator(.{}){};
+threadlocal var allocator_instance = std.heap.DebugAllocator(.{}){};
 threadlocal var instance: ?TestingContext = null;
 threadlocal var times_initialized: usize = 0;
 
@@ -20,7 +20,7 @@ pub fn getTestingContext() !(*const TestingContext) {
         times_initialized += 1;
         if (times_initialized > 1) {
             std.log.err(
-                "UI testing context initialized {} times." ++
+                "UI testing context initialized {} times. " ++
                     "This could be because the de-initialization happened in-between UI tests and not after all UI tests.",
                 .{times_initialized},
             );
@@ -37,8 +37,9 @@ pub fn deinitTestingContextAndDetectLeaks() void {
         context.deinit();
         instance = null;
     }
-    if (allocator_instance.detectLeaks()) {
-        std.log.err("UI testing context detected a memory leak.", .{});
+    const number_of_leaks = allocator_instance.detectLeaks();
+    if (number_of_leaks > 0) {
+        std.log.err("UI testing context detected {} memory leaks.", .{number_of_leaks});
     }
 }
 

@@ -125,7 +125,7 @@ pub fn Lines(comptime rendering_api: build_info.RenderingApi) type {
                     .depth_factor = depth_factor,
                 },
             }) catch |err| {
-                sdk.misc.error_context.append("Failed to add vertices to vertex to list.", .{});
+                sdk.misc.error_context.new("Failed to add vertices to vertex list.", .{});
                 sdk.misc.error_context.append("Failed to add a line to line renderer.", .{});
                 sdk.misc.error_context.logError(err);
                 return;
@@ -138,7 +138,7 @@ pub fn Lines(comptime rendering_api: build_info.RenderingApi) type {
                 self.current_index + 2,
                 self.current_index + 3,
             }) catch |err| {
-                sdk.misc.error_context.append("Failed to add indices to index to list.", .{});
+                sdk.misc.error_context.new("Failed to add indices to index list.", .{});
                 sdk.misc.error_context.append("Failed to add a line to line renderer.", .{});
                 sdk.misc.error_context.logError(err);
                 return;
@@ -217,11 +217,11 @@ pub fn Lines(comptime rendering_api: build_info.RenderingApi) type {
             context: *const dx.Context,
             buffer_context: *const dx.BufferContext,
             shader: *Shader,
-            vetices: []const Vertex,
+            vertices: []const Vertex,
             indices: []const Index,
             constants: *const Constants,
         ) !void {
-            shader.setVertices(context, vetices) catch |err| {
+            shader.setVertices(context, vertices) catch |err| {
                 sdk.misc.error_context.append("Failed to set shader vertices.", .{});
                 return err;
             };

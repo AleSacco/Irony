@@ -14,6 +14,7 @@ pub const TaiControls = struct {
 
     const Self = @This();
     const toggled_on_color = imgui.ImVec4{ .x = 0, .y = 0.4, .z = 0, .w = 1 };
+    const window_route = imgui.ImGuiInputFlags_RouteFocused | imgui.ImGuiInputFlags_RouteFromRootWindow;
 
     pub fn handleKeybinds(tai: *core.ToolAssistedInput) void {
         handlePlayKey(tai);
@@ -89,7 +90,7 @@ pub const TaiControls = struct {
         if (isPlayDisabled(tai)) {
             return;
         }
-        if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_F10, false)) {
+        if (imgui.igShortcut_Nil(imgui.ImGuiKey_F10, imgui.ImGuiInputFlags_RouteGlobal)) {
             tai.play();
         }
     }
@@ -113,7 +114,7 @@ pub const TaiControls = struct {
         if (isStopDisabled(tai)) {
             return;
         }
-        if (imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_F11, false)) {
+        if (imgui.igShortcut_Nil(imgui.ImGuiKey_F11, imgui.ImGuiInputFlags_RouteGlobal)) {
             tai.stop();
         }
     }
@@ -126,8 +127,8 @@ pub const TaiControls = struct {
             .clear_and_record = "Clear And Record",
         });
         var max_label_width: f32 = 0.0;
-        inline for (@typeInfo(Mode).@"enum".fields) |*field| {
-            const value: Mode = @enumFromInt(field.value);
+        inline for (@typeInfo(Mode).@"enum".field_values) |field_value| {
+            const value: Mode = @fromBackingInt(@intCast(field_value));
             var size: imgui.ImVec2 = undefined;
             imgui.igCalcTextSize(&size, labels.get(value), null, false, -1);
             max_label_width = @max(max_label_width, size.x);
@@ -136,8 +137,8 @@ pub const TaiControls = struct {
         imgui.igSetNextItemWidth(width);
         if (imgui.igBeginCombo("###record_mode", labels.get(self.record_mode), 0)) {
             defer imgui.igEndCombo();
-            inline for (@typeInfo(Mode).@"enum".fields) |*field| {
-                const value: Mode = @enumFromInt(field.value);
+            inline for (@typeInfo(Mode).@"enum".field_values) |field_value| {
+                const value: Mode = @fromBackingInt(@intCast(field_value));
                 if (imgui.igSelectable_Bool(labels.get(value), self.record_mode == value, 0, .{})) {
                     self.record_mode = value;
                 }
@@ -148,7 +149,7 @@ pub const TaiControls = struct {
     fn drawInitialStateButton() void {
         imgui.igBeginDisabled(true);
         defer imgui.igEndDisabled();
-        _ = imgui.igButton(" 🯅 ###intial_state", .{});
+        _ = imgui.igButton(" 🯅 ###initial_state", .{});
         if (imgui.igIsItemHovered(imgui.ImGuiHoveredFlags_AllowWhenDisabled)) {
             imgui.igSetTooltip("Use Recorded Initial State (Not yet implemented.)");
         }
@@ -177,10 +178,7 @@ pub const TaiControls = struct {
     }
 
     fn handleRepeatShortcut(self: *Self) void {
-        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Ctrl) {
-            return;
-        }
-        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_R, false)) {
+        if (!imgui.igShortcut_Nil(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_R, window_route)) {
             return;
         }
         self.repeat = !self.repeat;
@@ -201,18 +199,15 @@ pub const TaiControls = struct {
         }
         if (imgui.igIsItemHovered(0)) {
             const tooltip = switch (self.play_only_selection) {
-                false => "Play Only Selection [Ctrl + O]",
-                true => "Play Entire Sequence [Ctrl + O]",
+                false => "Play Only Selection [Ctrl + P]",
+                true => "Play Entire Sequence [Ctrl + P]",
             };
             imgui.igSetTooltip(tooltip);
         }
     }
 
     fn handleSelectionShortcut(self: *Self) void {
-        if (imgui.igGetIO_Nil().*.KeyMods != imgui.ImGuiMod_Ctrl) {
-            return;
-        }
-        if (!imgui.igIsKeyPressed_Bool(imgui.ImGuiKey_O, false)) {
+        if (!imgui.igShortcut_Nil(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_P, window_route)) {
             return;
         }
         self.play_only_selection = !self.play_only_selection;
@@ -246,6 +241,7 @@ test "should put tai in play mode when play button is clicked or F10 key is pres
 
             tai.stop();
             try testing.expect(tai.mode == .idle);
+            ctx.yield(1); // Shortcuts get routed one frame after they become enabled.
             ctx.keyPress(imgui.ImGuiKey_F10, 1);
             try testing.expect(tai.mode == .play);
         }
@@ -280,6 +276,7 @@ test "should put tai in idle mode when stop button is clicked or F11 key is pres
 
             tai.play();
             try testing.expect(tai.mode == .play);
+            ctx.yield(1); // Shortcuts get routed one frame after they become enabled.
             ctx.keyPress(imgui.ImGuiKey_F11, 1);
             try testing.expect(tai.mode == .idle);
         }
@@ -366,7 +363,7 @@ test "should toggle repeat when repeat button is clicked or Ctrl+R is pressed" {
     try context.runTest(.{}, Test.guiFunction, Test.testFunction);
 }
 
-test "should toggle between selection and whole sequence when repeat button is clicked or Ctrl+O is pressed" {
+test "should toggle between selection and whole sequence when selection button is clicked or Ctrl+P is pressed" {
     const Test = struct {
         var tai = core.ToolAssistedInput.init(testing.allocator);
         var coordinator = core.TaiRecordingCoordinator{};
@@ -411,19 +408,19 @@ test "should toggle between selection and whole sequence when repeat button is c
             try testing.expectEqual(false, tai.play_config.enable_player_2);
             try testing.expectEqual(0, tai.play_config.start_index);
             try testing.expectEqual(std.math.maxInt(usize), tai.play_config.length);
-            ctx.keyPress(imgui.ImGuiKey_O, 1);
+            ctx.keyPress(imgui.ImGuiKey_P, 1);
             try testing.expectEqual(false, tai.play_config.enable_player_1);
             try testing.expectEqual(true, tai.play_config.enable_player_2);
             try testing.expectEqual(1, tai.play_config.start_index);
             try testing.expectEqual(2, tai.play_config.length);
-            ctx.keyPress(imgui.ImGuiKey_O, 1);
+            ctx.keyPress(imgui.ImGuiKey_P, 1);
             try testing.expectEqual(true, tai.play_config.enable_player_1);
             try testing.expectEqual(false, tai.play_config.enable_player_2);
             try testing.expectEqual(0, tai.play_config.start_index);
             try testing.expectEqual(std.math.maxInt(usize), tai.play_config.length);
             ctx.keyUp(imgui.ImGuiKey_LeftCtrl);
 
-            ctx.keyPress(imgui.ImGuiKey_O, 1);
+            ctx.keyPress(imgui.ImGuiKey_P, 1);
             try testing.expectEqual(true, tai.play_config.enable_player_1);
             try testing.expectEqual(false, tai.play_config.enable_player_2);
             try testing.expectEqual(0, tai.play_config.start_index);

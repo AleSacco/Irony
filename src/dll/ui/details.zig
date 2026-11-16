@@ -149,7 +149,7 @@ pub const Details = struct {
         "Irony Version",
         \\Version of Irony that data was recorded with.
         \\Can be used to check what version of Irony was used to record old recordings.
-        \\If blank, the data was recorded by version of Irony older then 2.4.0.
+        \\If blank, the data was recorded by version of Irony older than 2.4.0.
     ,
         model.IronyVersion,
         null,
@@ -159,7 +159,7 @@ pub const Details = struct {
         "Game",
         \\Game that the data was recorded from.
         \\You can open recordings of T8 inside T7 and recordings of T7 inside T8.
-        \\If blank, the data was recorded by version of Irony older then 2.4.0.
+        \\If blank, the data was recorded by version of Irony older than 2.4.0.
     ,
         model.Game,
         null,
@@ -168,8 +168,8 @@ pub const Details = struct {
     game_version: Row(
         "Game Version",
         \\Version of the game that the data was recorded from.
-        \\Can be used to check what the version the game was when an old recording was recorded.
-        \\If blank, Irony failed to read the game version or data was recorded by version of Irony older then 2.4.0.
+        \\Can be used to check what version the game was when an old recording was recorded.
+        \\If blank, Irony failed to read the game version or data was recorded by version of Irony older than 2.4.0.
     ,
         model.GameVersion,
         .empty,
@@ -181,7 +181,7 @@ pub const Details = struct {
         \\Practice - Data was recorded inside practice mode.
         \\Live Game - Data was recorded while a live match was played.
         \\Replay Loading - Data was recorded during the fast game simulation while a replay was loading.
-        \\Replay Playback - Data was recorded from a manual playback of a already loaded replay.
+        \\Replay Playback - Data was recorded from a manual playback of an already loaded replay.
     ,
         model.Source,
         null,
@@ -277,7 +277,7 @@ pub const Details = struct {
         \\One of the following:
         \\Available - Rage not active but can get activated once player's health drops low enough.
         \\Activated - Player's health dropped low enough to activate rage, but player did not use rage art yet.
-        \\Used Up - Player previously used rage art and therefor can no longer enter rage in this round.
+        \\Used Up - Player previously used rage art and therefore can no longer enter rage in this round.
     ,
         model.Rage,
         null,
@@ -346,7 +346,7 @@ pub const Details = struct {
     move_frame: Row(
         "Move Frame",
         \\In most situations, same as "Animation Frame".
-        \\However, in situations where the game freezes ether player's animation, this number stops increasing in value.
+        \\However, in situations where the game freezes either player's animation, this number stops increasing in value.
         \\This causes the value to diverge from "Animation Frame", but makes the value better for frame data math.
     ,
         u32,
@@ -356,7 +356,7 @@ pub const Details = struct {
     startup_frames: Row(
         "Startup Frames",
         \\Number of frames that the current attack is in start up phase.
-        \\Frames in which ether player's animation is frozen are not counted in this value.
+        \\Frames in which either player's animation is frozen are not counted in this value.
         \\The value outside brackets indicates the startup frames in the current interaction.
         \\The values inside brackets indicate the minimum and maximum possible startup frames for the current attack.
     ,
@@ -368,7 +368,7 @@ pub const Details = struct {
         "Active Frames",
         \\Number of frames that the current attack is in active phase.
         \\The value outside brackets indicates the active frames in the current interaction.
-        \\The values inside brackets indicate the minimum and maximum possible active frames for the current attack.
+        \\The value inside brackets indicates the maximum possible active frames for the current attack.
     ,
         model.U32ActualMax,
         .nulls,
@@ -377,7 +377,7 @@ pub const Details = struct {
     recovery_frames: Row(
         "Recovery Frames",
         \\Number of frames that the current move is in recovery phase.
-        \\Frames in which ether player's animation is frozen are not counted in this value.
+        \\Frames in which either player's animation is frozen are not counted in this value.
         \\The value outside brackets indicates the recovery frames in the current interaction.
         \\The values inside brackets indicate the minimum and maximum possible recovery frames for the current move.
     ,
@@ -387,9 +387,9 @@ pub const Details = struct {
     ) = .{},
     total_frames: Row(
         "Total Frames",
-        \\For most moves, same as "Total Animation Frame".
-        \\However, frames in which ether player's animation is frozen are not counted in this value.
-        \\This causes the value to diverge from "Total Animation Frame", but makes the value better for frame data math.
+        \\For most moves, same as "Animation Total Frames".
+        \\However, frames in which either player's animation is frozen are not counted in this value.
+        \\This causes the value to diverge from "Animation Total Frames", but makes the value better for frame data math.
     ,
         u32,
         null,
@@ -398,8 +398,8 @@ pub const Details = struct {
     frame_advantage: Row(
         "Frame Advantage",
         \\Difference of recovery time in frames between the player and his opponent.
-        \\Positive value indicates the player recovering sooner then the opponent.
-        \\Negative value indicates the opponent recovering sooner then the player.
+        \\Positive value indicates the player recovering sooner than the opponent.
+        \\Negative value indicates the opponent recovering sooner than the player.
         \\Zero indicates simultaneous recovery.
         \\The value outside brackets indicates the frame advantage in the current interaction.
         \\The values inside brackets indicate the minimum and maximum possible frame advantage for the current move.
@@ -430,7 +430,7 @@ pub const Details = struct {
         "Attack Range [m]",
         \\Distance between the most exposed point on player's hurt cylinders taken 1 frame before the start of the
         \\attack animation and the furthest reaching point on attack's hit lines.
-        \\Everything is first projected to the line that points in the direction the player is looking at at the first
+        \\Everything is first projected to the line that points in the direction the player is facing at the first
         \\frame of attack animation. The distance is then measured on that projection line.
     ,
         f32,
@@ -448,7 +448,7 @@ pub const Details = struct {
         "Recovery Range [m]",
         \\Distance between the furthest reaching point on attack's hit lines and the most exposed point on player's
         \\hurt cylinders taken at the last recovery frame.
-        \\Everything is first projected to the line that points in the direction the player was looking at at the first
+        \\Everything is first projected to the line that points in the direction the player was facing at the first
         \\frame of attack animation. The distance is then measured on that projection line.
         \\Positive value indicates that the player recovered behind attack's hit lines.
         \\Negative value indicates that the player recovered in front of attack's hit lines.
@@ -483,8 +483,8 @@ pub const Details = struct {
     posture: Row(
         "Posture",
         \\One of the following:
-        \\Standing - Can block mid and high attacks. Gets hit my lows attacks.
-        \\Crouching - Can block low attacks. Gets hit my mid attacks. Crushes high attacks.
+        \\Standing - Can block mid and high attacks. Gets hit by low attacks.
+        \\Crouching - Can block low attacks. Gets hit by mid attacks. Crushes high attacks.
         \\Downed Face Up - Gets hit by mid and low attacks. Crushes high attacks.
         \\Downed Face Down - Gets hit by mid and low attacks. Crushes high attacks.
         \\Airborne - Getting hit results in getting floated. Does not necessarily crush low attacks.
@@ -536,7 +536,7 @@ pub const Details = struct {
     throw_escape_phase: Row(
         "Throw Escape Phase",
         \\One of the following:
-        \\In Escape Window - Player is able input buttons to escape the throw.
+        \\In Escape Window - Player is able to input buttons to escape the throw.
         \\Escape Success - Player succeeded in escaping the throw.
         \\Escape Fail - Player failed in escaping the throw.
     ,
@@ -560,7 +560,7 @@ pub const Details = struct {
         \\1 - The current throw can be escaped by inputting only left punch.
         \\2 - The current throw can be escaped by inputting only right punch.
         \\1+2 - The current throw can be escaped by inputting left and right punch simultaneously.
-        \\1 or 2 - The current throw can be escaped by inputting ether only left punch or only right punch.
+        \\1 or 2 - The current throw can be escaped by inputting either only left punch or only right punch.
     ,
         model.ThrowEscapeInputs,
         .{},
@@ -815,8 +815,8 @@ pub const Details = struct {
     }
 
     pub fn update(self: *Self, delta_time: f32) void {
-        inline for (@typeInfo(Self).@"struct".fields) |*field| {
-            @field(self, field.name).update(delta_time);
+        inline for (@typeInfo(Self).@"struct".field_names) |field_name| {
+            @field(self, field_name).update(delta_time);
         }
     }
 
@@ -846,9 +846,9 @@ pub const Details = struct {
         imgui.igTableSetupColumn(getHeaderName(settings.column_2), 0, 0, 0);
         imgui.igTableHeadersRow();
 
-        inline for (@typeInfo(Self).@"struct".fields) |*field| {
-            if (@field(settings.rows_enabled, field.name)) {
-                @field(self, field.name).draw(settings);
+        inline for (@typeInfo(Self).@"struct".field_names) |field_name| {
+            if (@field(settings.rows_enabled, field_name)) {
+                @field(self, field_name).draw(settings);
             }
         }
         overlay_hud.render();
@@ -980,13 +980,13 @@ fn drawYesNo(value: bool, alpha: f32) void {
 
 fn drawU32(value: u32, alpha: f32) void {
     var buffer: [string_buffer_size]u8 = undefined;
-    const text = std.fmt.bufPrintZ(&buffer, "{}", .{value}) catch error_string;
+    const text = std.fmt.bufPrintSentinel(&buffer, "{}", .{value}, 0) catch error_string;
     drawText(text, alpha);
 }
 
 fn drawF32(value: f32, alpha: f32) void {
     var buffer: [string_buffer_size]u8 = undefined;
-    const text = std.fmt.bufPrintZ(&buffer, "{d:.2}", .{value}) catch error_string;
+    const text = std.fmt.bufPrintSentinel(&buffer, "{d:.2}", .{value}, 0) catch error_string;
     drawText(text, alpha);
 }
 
@@ -1000,7 +1000,7 @@ fn drawF32Degrees(value: f32, alpha: f32) void {
 
 fn drawIronyVersion(value: model.IronyVersion, alpha: f32) void {
     var buffer: [string_buffer_size]u8 = undefined;
-    const text = std.fmt.bufPrintZ(&buffer, "{f}", .{value}) catch error_string;
+    const text = std.fmt.bufPrintSentinel(&buffer, "{f}", .{value}, 0) catch error_string;
     drawText(text, alpha);
 }
 
@@ -1021,7 +1021,7 @@ fn drawPlayerName(value: model.PlayerName, alpha: f32) void {
 }
 
 fn drawU32ActualMax(value: model.U32ActualMax, alpha: f32) void {
-    var buffer: [string_buffer_size]u8 = [1]u8{0} ** string_buffer_size;
+    var buffer: [string_buffer_size]u8 = @splat(0);
     var writer = std.Io.Writer.fixed(&buffer);
     if (value.actual) |actual| {
         writer.print("{}", .{actual}) catch {};
@@ -1043,7 +1043,7 @@ fn drawU32ActualMax(value: model.U32ActualMax, alpha: f32) void {
 }
 
 fn drawU32ActualMinMax(value: model.U32ActualMinMax, alpha: f32) void {
-    var buffer: [string_buffer_size]u8 = [1]u8{0} ** string_buffer_size;
+    var buffer: [string_buffer_size]u8 = @splat(0);
     var writer = std.Io.Writer.fixed(&buffer);
     if (value.actual) |actual| {
         writer.print("{}", .{actual}) catch {};
@@ -1071,7 +1071,7 @@ fn drawU32ActualMinMax(value: model.U32ActualMinMax, alpha: f32) void {
 }
 
 fn drawI32ActualMinMax(value: model.I32ActualMinMax, alpha: f32) void {
-    var buffer: [string_buffer_size]u8 = [1]u8{0} ** string_buffer_size;
+    var buffer: [string_buffer_size]u8 = @splat(0);
     var writer = std.Io.Writer.fixed(&buffer);
     if (value.actual) |actual| {
         if (actual > 0) {
@@ -1097,7 +1097,7 @@ fn drawI32ActualMinMax(value: model.I32ActualMinMax, alpha: f32) void {
 }
 
 fn drawF32MinMax(value: model.F32MinMax, alpha: f32) void {
-    var buffer: [string_buffer_size]u8 = [1]u8{0} ** string_buffer_size;
+    var buffer: [string_buffer_size]u8 = @splat(0);
     var writer = std.Io.Writer.fixed(&buffer);
     if (value.min) |min| {
         writer.print("{d:.2}", .{min}) catch {};
@@ -1257,7 +1257,7 @@ fn drawThrowEscapeTiming(value: model.ThrowEscapeTiming, alpha: f32) void {
 }
 
 fn drawThrowEscapeInputs(value: model.ThrowEscapeInputs, alpha: f32) void {
-    var buffer: [string_buffer_size]u8 = [1]u8{0} ** string_buffer_size;
+    var buffer: [string_buffer_size]u8 = @splat(0);
     var writer = std.Io.Writer.fixed(&buffer);
     var is_first = true;
     if (value.one) {
@@ -1291,12 +1291,12 @@ fn drawThrowEscapeInputs(value: model.ThrowEscapeInputs, alpha: f32) void {
 }
 
 fn drawCrushing(value: model.Crushing, alpha: f32) void {
-    var buffer: [string_buffer_size]u8 = [1]u8{0} ** string_buffer_size;
+    var buffer: [string_buffer_size]u8 = @splat(0);
     var writer = std.Io.Writer.fixed(&buffer);
     var is_first = true;
     if (value.invincibility) {
         if (!is_first) {
-            writer.writeByte('+') catch {};
+            writer.writeAll(", ") catch {};
         }
         writer.writeAll("Everything") catch {};
         is_first = false;
@@ -1340,8 +1340,8 @@ fn drawCrushing(value: model.Crushing, alpha: f32) void {
 }
 
 fn drawInput(value: model.Input, alpha: f32) void {
-    var buffer: [string_buffer_size]u8 = [1]u8{0} ** string_buffer_size;
-    const text = std.fmt.bufPrintZ(&buffer, "{f}", .{value}) catch error_string;
+    var buffer: [string_buffer_size]u8 = @splat(0);
+    const text = std.fmt.bufPrintSentinel(&buffer, "{f}", .{value}, 0) catch error_string;
     if (text.len > 0) {
         drawText(text, alpha);
     } else {
@@ -1364,7 +1364,7 @@ fn drawHeat(value: model.Heat, alpha: f32) void {
         .activated => |activated| {
             const percent = activated.gauge * 100;
             var buffer: [string_buffer_size]u8 = undefined;
-            const text = std.fmt.bufPrintZ(&buffer, "Activated: {d:.1}%", .{percent}) catch error_string;
+            const text = std.fmt.bufPrintSentinel(&buffer, "Activated: {d:.1}%", .{percent}, 0) catch error_string;
             drawText(text, alpha);
             return;
         },
@@ -1604,11 +1604,12 @@ test "should put text into clipboard when clicking text" {
             sdk.ui.toasts.update(100);
         }
     };
+    sdk.ui.toasts.setIo(testing.io);
     const context = try sdk.ui.getTestingContext();
     try context.runTest(.{}, Test.guiFunction, Test.testFunction);
 }
 
-test "should should slowly fade out from last present value to null or empty value" {
+test "should slowly fade out from last present value to null or empty value" {
     const Test = struct {
         var settings = model.DetailsSettings{ .rows_enabled = .{} };
         var details = Details{};
@@ -3004,7 +3005,7 @@ test "should draw combo hits correctly" {
     try context.runTest(.{}, Test.guiFunction, Test.testFunction);
 }
 
-test "should draw combo damage" {
+test "should draw combo damage correctly" {
     const Test = struct {
         var settings = model.DetailsSettings{ .rows_enabled = .{} };
         var details = Details{};
@@ -3829,7 +3830,7 @@ test "should draw distance to wall correctly" {
                             model.Wall{ .edge_1 = .fromArray(.{ 556, -1 }), .edge_2_index = 2 },
                             model.Wall{ .edge_1 = .fromArray(.{ 556, 1 }), .edge_2_index = 3 },
                             model.Wall{ .edge_1 = .fromArray(.{ -223, 1 }), .edge_2_index = 0 },
-                        } ++ ([1]model.Wall{undefined} ** (model.Walls.max_len - 4)),
+                        } ++ @as([model.Walls.max_len - 4]model.Wall, @splat(undefined)),
                         .len = 4,
                     },
                 },
@@ -3877,7 +3878,7 @@ test "should draw angle to wall correctly" {
                             model.Wall{ .edge_1 = .fromArray(.{ -100, -100 }), .edge_2_index = 1 },
                             model.Wall{ .edge_1 = .fromArray(.{ 300, -100 }), .edge_2_index = 2 },
                             model.Wall{ .edge_1 = .fromArray(.{ -100, 300 }), .edge_2_index = 0 },
-                        } ++ ([1]model.Wall{undefined} ** (model.Walls.max_len - 3)),
+                        } ++ @as([model.Walls.max_len - 3]model.Wall, @splat(undefined)),
                         .len = 4,
                     },
                 },

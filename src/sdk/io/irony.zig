@@ -59,7 +59,7 @@ pub fn writeIronyFormat(
     };
 
     var encoder = io.ZstdEncoder.init(allocator, writer, compression_level) catch |err| {
-        misc.error_context.append("Failed to initialize XZ encoder.", .{});
+        misc.error_context.append("Failed to initialize zstd encoder.", .{});
         return err;
     };
     defer encoder.deinit();
@@ -86,7 +86,7 @@ pub fn writeIronyFormat(
     };
 
     encoder_writer.flush() catch |err| {
-        misc.error_context.append("Failed to flush encoder writer.", .{});
+        misc.error_context.new("Failed to flush encoder writer.", .{});
         return err;
     };
 }
@@ -120,13 +120,13 @@ pub fn readIronyFormat(
     }
     if (version > current_version_number) {
         std.log.warn(
-            "File's version number {} is larger then expected {}. Expecting file parsing to fail but proceeding anyway.",
+            "File's version number {} is larger than expected {}. Expecting file parsing to fail but proceeding anyway.",
             .{ version, current_version_number },
         );
     }
 
     var decoder = io.ZstdDecoder.init(allocator, reader) catch |err| {
-        misc.error_context.append("Failed to initialize XZ decoder.", .{});
+        misc.error_context.append("Failed to initialize zstd decoder.", .{});
         return err;
     };
     defer decoder.deinit();
@@ -140,7 +140,7 @@ pub fn readIronyFormat(
 
     const local_fields = getLocalFields(Frame);
     const remote_fields = readFieldList(&decoder_reader, remote_frame_size, local_fields) catch |err| {
-        misc.error_context.append("Failed to read fields list.", .{});
+        misc.error_context.append("Failed to read field list.", .{});
         return err;
     };
 
@@ -189,7 +189,7 @@ fn readFieldList(
     remote_frame_size: FrameSize,
     comptime local_fields: []const LocalField,
 ) ![local_fields.len]?RemoteField {
-    var result = [1]?RemoteField{null} ** local_fields.len;
+    var result: [local_fields.len]?RemoteField = @splat(null);
     const remote_fields_len = reader.takeInt(NumberOfFields, endian) catch |err| {
         misc.error_context.new("Failed to read number of fields.", .{});
         return err;
@@ -207,7 +207,7 @@ fn readFieldList(
             return err;
         };
         const remote_offset = reader.takeInt(FieldOffset, endian) catch |err| {
-            misc.error_context.new("Failed to read the field size. Field path is: {s}", .{path});
+            misc.error_context.new("Failed to read the field offset. Field path is: {s}", .{path});
             return err;
         };
         const remote_size = reader.takeInt(FieldSize, endian) catch |err| {
@@ -215,11 +215,11 @@ fn readFieldList(
             return err;
         };
         const total = std.math.add(FrameSize, remote_offset, remote_size) catch |err| {
-            misc.error_context.new("Field exceeded exceeded frame size limits: {s}", .{path});
+            misc.error_context.new("Field exceeded frame size limits: {s}", .{path});
             return err;
         };
         if (total > remote_frame_size) {
-            misc.error_context.new("Field exceeded exceeded frame size limits: {s}", .{path});
+            misc.error_context.new("Field exceeded frame size limits: {s}", .{path});
             return error.InvalidRemoteField;
         }
         for (local_fields, 0..) |*local_field, local_index| {
@@ -335,7 +335,7 @@ fn readFrames(
 
     for (frames, 0..) |*frame, frame_index| {
         frame.* = default_frame.*;
-        var fields_to_default = [1]bool{false} ** local_fields.len;
+        var fields_to_default: [local_fields.len]bool = @splat(false);
 
         inline for (local_fields, remote_fields, &fields_to_default) |*local_field, *remote_field_maybe, *to_default| {
             if (remote_field_maybe.*) |*remote_field| {
@@ -347,7 +347,7 @@ fn readFrames(
                     if (readValue(Type, data)) |value| {
                         setFieldValue(frame, local_field.access, &value) catch |err| {
                             misc.error_context.append(
-                                "Failed to set field with path {s} on frame {} to it's new value. " ++
+                                "Failed to set field with path {s} on frame {} to its new value. " ++
                                     "Falling back to default value.",
                                 .{ local_field.path, frame_index },
                             );
@@ -401,10 +401,7 @@ fn writeValue(writer: *std.Io.Writer, value_pointer: anytype) !void {
         },
         .int => |*info| {
             const value = value_pointer.*;
-            const WriteType = @Type(.{ .int = .{
-                .signedness = info.signedness,
-                .bits = serializedSizeOf(Type) * std.mem.byte_size_in_bits,
-            } });
+            const WriteType = @Int(info.signedness, serializedSizeOf(Type) * std.mem.byte_size_in_bits);
             const write_value: WriteType = @intCast(value);
             writer.writeInt(WriteType, write_value, endian) catch |err| {
                 misc.error_context.new(
@@ -416,7 +413,7 @@ fn writeValue(writer: *std.Io.Writer, value_pointer: anytype) !void {
         },
         .float => |*info| {
             const value = value_pointer.*;
-            const IntType = @Type(.{ .int = .{ .signedness = .unsigned, .bits = info.bits } });
+            const IntType = @Int(.unsigned, info.bits);
             const int_value: IntType = @bitCast(value);
             writeValue(writer, &int_value) catch |err| {
                 misc.error_context.append(
@@ -429,7 +426,7 @@ fn writeValue(writer: *std.Io.Writer, value_pointer: anytype) !void {
         .@"enum" => |*info| {
             const value = value_pointer.*;
             const IntType = info.tag_type;
-            const int_value: IntType = @intFromEnum(value);
+            const int_value: IntType = @backingInt(value);
             writeValue(writer, &int_value) catch |err| {
                 misc.error_context.append(
                     "Failed to write enum: {s} ({s} -> {s})",
@@ -470,30 +467,30 @@ fn writeValue(writer: *std.Io.Writer, value_pointer: anytype) !void {
             }
         },
         .@"struct" => |*info| if (info.backing_integer) |IntType| {
-            const int_pointer: *const IntType = @ptrCast(value_pointer);
-            writeValue(writer, int_pointer) catch |err| {
+            const int_value: IntType = @backingInt(value_pointer.*);
+            writeValue(writer, &int_value) catch |err| {
                 misc.error_context.append(
                     "Failed to write packed struct's backing int: {} ({s})",
-                    .{ int_pointer.*, @typeName(IntType) },
+                    .{ int_value, @typeName(IntType) },
                 );
                 return err;
             };
         } else {
-            inline for (info.fields) |*field| {
-                const field_pointer = &@field(value_pointer, field.name);
+            inline for (info.field_names) |field_name| {
+                const field_pointer = &@field(value_pointer, field_name);
                 writeValue(writer, field_pointer) catch |err| {
-                    misc.error_context.append("Failed to write struct field: {s}", .{field.name});
+                    misc.error_context.append("Failed to write struct field: {s}", .{field_name});
                     return err;
                 };
             }
         },
         .@"union" => |*info| if (info.layout == .@"packed") {
-            const IntType = @Type(.{ .int = .{ .signedness = .unsigned, .bits = @bitSizeOf(Type) } });
-            const int_pointer: *const IntType = @ptrCast(value_pointer);
-            writeValue(writer, int_pointer) catch |err| {
+            const int_value = @backingInt(value_pointer.*);
+            const IntType = @TypeOf(int_value);
+            writeValue(writer, &int_value) catch |err| {
                 misc.error_context.append(
                     "Failed to write packed union's backing int: {} ({s})",
-                    .{ int_pointer.*, @typeName(IntType) },
+                    .{ int_value, @typeName(IntType) },
                 );
                 return err;
             };
@@ -546,10 +543,7 @@ fn readValue(comptime Type: type, data: []const u8) !Type {
         },
         .int => |*info| {
             const local_size = serializedSizeOf(Type);
-            const ReadType = @Type(.{ .int = .{
-                .signedness = info.signedness,
-                .bits = local_size * std.mem.byte_size_in_bits,
-            } });
+            const ReadType = @Int(info.signedness, local_size * std.mem.byte_size_in_bits);
             const read_len = @min(local_size, data.len);
             const read_data, const padding = switch (endian) {
                 .little => .{ data[0..read_len], data[read_len..data.len] },
@@ -583,13 +577,10 @@ fn readValue(comptime Type: type, data: []const u8) !Type {
             inline for (.{ f16, f32, f64, f80, f128 }) |ReadType| {
                 const read_size = serializedSizeOf(ReadType);
                 if (read_size == data.len) {
-                    const IntType = @Type(.{ .int = .{
-                        .signedness = .unsigned,
-                        .bits = read_size * std.mem.byte_size_in_bits,
-                    } });
+                    const IntType = @Int(.unsigned, read_size * std.mem.byte_size_in_bits);
                     const int_value = readValue(IntType, data) catch |err| {
                         misc.error_context.append(
-                            "Failed to read floats's int value. ({s} -> {s})",
+                            "Failed to read float's int value. ({s} -> {s})",
                             .{ @typeName(ReadType), @typeName(IntType) },
                         );
                         return err;
@@ -598,24 +589,24 @@ fn readValue(comptime Type: type, data: []const u8) !Type {
                     return @floatCast(read_float);
                 }
             }
-            misc.error_context.append("Invalid float size: {}", .{data.len});
+            misc.error_context.new("Invalid float size: {}", .{data.len});
             return error.InvalidValue;
         },
         .@"enum" => |*info| {
             const IntType = info.tag_type;
             const int_value = readValue(IntType, data) catch |err| {
                 misc.error_context.append(
-                    "Failed to read enums's tag. ({s} -> {s})",
+                    "Failed to read enum's tag. ({s} -> {s})",
                     .{ @typeName(Type), @typeName(IntType) },
                 );
                 return err;
             };
-            return std.meta.intToEnum(Type, int_value) catch |err| {
+            return std.enums.fromInt(Type, int_value) orelse {
                 misc.error_context.new(
                     "Integer value {} ({s}) does not match any enum tags. ({s})",
                     .{ int_value, @typeName(IntType), @typeName(Type) },
                 );
-                return err;
+                return error.InvalidEnumValue;
             };
         },
         .@"struct" => |*info| {
@@ -627,21 +618,21 @@ fn readValue(comptime Type: type, data: []const u8) !Type {
                 );
                 return err;
             };
-            return @bitCast(int_value);
+            return @fromBackingInt(int_value);
         },
         .@"union" => |*info| {
             if (info.layout != .@"packed") {
                 @compileError("Unsupported type: " ++ @typeName(Type));
             }
-            const IntType = @Type(.{ .int = .{ .signedness = .unsigned, .bits = @bitSizeOf(Type) } });
+            const IntType = @Int(.unsigned, @bitSizeOf(Type));
             const int_value = readValue(IntType, data) catch |err| {
                 misc.error_context.append(
-                    "Failed to read packed unions's int value. ({s} -> {s})",
+                    "Failed to read packed union's int value. ({s} -> {s})",
                     .{ @typeName(Type), @typeName(IntType) },
                 );
                 return err;
             };
-            return @bitCast(int_value);
+            return @fromBackingInt(int_value);
         },
         else => @compileError("Unsupported type: " ++ @typeName(Type)),
     }
@@ -738,9 +729,9 @@ fn setFieldValue(lhs_pointer: anytype, comptime access: []const AccessElement, v
             if (current_tag == next_tag) {
                 return;
             }
-            inline for (@typeInfo(Union).@"union".fields) |*field| {
-                if (@field(Tag, field.name) == next_tag) {
-                    lhs_pointer.* = @unionInit(Union, field.name, undefined);
+            inline for (@typeInfo(Union).@"union".field_names) |field_name| {
+                if (@field(Tag, field_name) == next_tag) {
+                    lhs_pointer.* = @unionInit(Union, field_name, undefined);
                     return;
                 }
             }
@@ -812,11 +803,12 @@ fn setFieldToDefaultRecursive(
         .struct_field => |name| .{
             &@field(lhs_pointer, name),
             if (default_pointer_maybe) |default_pointer| &@field(default_pointer, name) else block: {
-                break :block comptime for (@typeInfo(Type).@"struct".fields) |field| {
-                    if (std.mem.eql(u8, field.name, name)) {
-                        break @as(?*const field.type, @ptrCast(@alignCast(field.default_value_ptr)));
+                const info = &@typeInfo(Type).@"struct";
+                comptime for (info.field_names, info.field_types, info.field_attrs) |field_name, Field, attr| {
+                    if (std.mem.eql(u8, field_name, name)) {
+                        break :block @as(?*const Field, @ptrCast(@alignCast(attr.default_value_ptr)));
                     }
-                } else null;
+                } else break :block null;
             },
         },
         .array_index => |index| .{
@@ -898,13 +890,13 @@ fn serializedSizeOf(comptime Type: type) comptime_int {
         .bool => 1,
         .int => |*info| std.math.divCeil(comptime_int, info.bits, std.mem.byte_size_in_bits) catch {
             @compileError(std.fmt.comptimePrint(
-                "Failed to ceil devide {} with {}.",
+                "Failed to ceil divide {} with {}.",
                 .{ info.bits, std.mem.byte_size_in_bits },
             ));
         },
         .float => |*info| std.math.divCeil(comptime_int, info.bits, std.mem.byte_size_in_bits) catch {
             @compileError(std.fmt.comptimePrint(
-                "Failed to ceil devide {} with {}.",
+                "Failed to ceil divide {} with {}.",
                 .{ info.bits, std.mem.byte_size_in_bits },
             ));
         },
@@ -916,22 +908,22 @@ fn serializedSizeOf(comptime Type: type) comptime_int {
                 return serializedSizeOf(IntType);
             }
             var sum: usize = 0;
-            for (info.fields) |*field| {
-                sum += serializedSizeOf(field.type);
+            for (info.field_types) |Field| {
+                sum += serializedSizeOf(Field);
             }
             return sum;
         },
         .@"union" => |*info| {
             if (info.layout == .@"packed") {
-                const IntType = @Type(.{ .int = .{ .signedness = .unsigned, .bits = @bitSizeOf(Type) } });
+                const IntType = @Int(.unsigned, @bitSizeOf(Type));
                 return serializedSizeOf(IntType);
             }
             const Tag = info.tag_type orelse {
                 @compileError("Union " ++ @typeName(Type) ++ " is not serializable. (Not tagged and not packed.)");
             };
             var max: usize = 0;
-            inline for (info.fields) |*field| {
-                max = @max(max, serializedSizeOf(field.type));
+            inline for (info.field_types) |Field| {
+                max = @max(max, serializedSizeOf(Field));
             }
             return serializedSizeOf(Tag) + max;
         },
@@ -958,9 +950,9 @@ fn getLocalFieldsRecursive(state: *GetLocalFieldsState, Type: type) void {
         .@"struct" => |*info| if (info.layout == .@"packed") {
             state.addField(Type);
         } else {
-            for (info.fields) |*field_info| {
-                state.push(.{ .struct_field = field_info.name });
-                getLocalFieldsRecursive(state, field_info.type);
+            for (info.field_names, info.field_types) |field_name, Field| {
+                state.push(.{ .struct_field = field_name });
+                getLocalFieldsRecursive(state, Field);
                 state.pop();
             }
         },
@@ -990,10 +982,10 @@ fn getLocalFieldsRecursive(state: *GetLocalFieldsState, Type: type) void {
             state.pop();
             const payload_start_offset = state.offset;
             var max_payload_end_offset = state.offset;
-            for (info.fields) |*field_info| {
+            for (info.field_names, info.field_types) |field_name, Field| {
                 state.offset = payload_start_offset;
-                state.push(.{ .union_field = field_info.name });
-                getLocalFieldsRecursive(state, field_info.type);
+                state.push(.{ .union_field = field_name });
+                getLocalFieldsRecursive(state, Field);
                 state.pop();
                 max_payload_end_offset = @max(max_payload_end_offset, state.offset);
             }
@@ -1105,7 +1097,7 @@ test "readIronyFormat should load the same recording that writeIronyFormat saved
         optional: ?f32 = 0,
         @"enum": enum { a, b } = .a,
         @"struct": struct { a: f32 = 0, b: f32 = 0 } = .{},
-        packed_struct: packed struct { a: u18 = 0, b: u14 = 0 } = .{},
+        packed_struct: packed struct(u32) { a: u18 = 0, b: u14 = 0 } = .{},
         tuple: struct { f32, f32 } = .{ 0, 0 },
         array: [2]f32 = .{ 0, 0 },
         tagged_union: union(enum) { i: i32, f: f32 } = .{ .i = 0 },
@@ -1167,7 +1159,7 @@ test "readIronyFormat should load the same recording that writeIronyFormat saved
     try testing.expectEqualSlices(Frame, &saved_recording, loaded_recording);
 }
 
-test "readIronyFormat should succeed when recording has more fields then expected" {
+test "readIronyFormat should succeed when recording has more fields than expected" {
     const SavedFrame = struct { a: f32 = -1, b: f32 = -2 };
     const LoadedFrame = struct { a: f32 = -3 };
     var buffer: [1024]u8 = undefined;
@@ -1227,7 +1219,7 @@ test "readIronyFormat should use struct type default value when missing field do
     }, recording);
 }
 
-test "readIronyFormat should succeed in loading fields that are smaller then expected" {
+test "readIronyFormat should succeed in loading fields that are smaller than expected" {
     const SavedFrame = struct { a: u16 = 11, b: i6 = 12, c: f32 = 13, d: enum(u2) { a = 0, b = 1 } = .a };
     const LoadedFrame = struct { a: u32 = 21, b: i12 = 22, c: f64 = 23, d: enum(u3) { a = 0, b = 1, c = 2 } = .b };
     var buffer: [1024]u8 = undefined;
@@ -1247,7 +1239,7 @@ test "readIronyFormat should succeed in loading fields that are smaller then exp
     }, recording);
 }
 
-test "readIronyFormat should succeed in loading fields that are larger then expected when the values fit" {
+test "readIronyFormat should succeed in loading fields that are larger than expected when the values fit" {
     const SavedFrame = struct { a: u32 = 11, b: i12 = 12, c: f64 = 13, d: enum(u3) { a = 0, b = 1, c = 2 } = .a };
     const LoadedFrame = struct { a: u16 = 21, b: i6 = 22, c: f32 = 23, d: enum(u2) { a = 0, b = 1 } = .b };
     var buffer: [1024]u8 = undefined;
@@ -1267,7 +1259,7 @@ test "readIronyFormat should succeed in loading fields that are larger then expe
     }, recording);
 }
 
-test "readIronyFormat should use default value when loading fields that are larger then expected and values do not fit" {
+test "readIronyFormat should use default value when loading fields that are larger than expected and values do not fit" {
     const SavedFrame = struct { a: u32 = 11, b: i12 = 12, c: enum(u3) { a = 0, b = 1, c = 2 } = .a };
     const LoadedFrame = struct { a: u16 = 21, b: i6 = 22, c: enum(u2) { a = 0, b = 1 } = .b };
     var buffer: [1024]u8 = undefined;
@@ -1414,19 +1406,19 @@ test "readIronyFormat should use default value when encountering invalid tagged 
 }
 
 test "readIronyFormat should load the same recording that writeIronyFormat saved when working with packed types" {
-    const StructOfUnions = packed struct {
-        a: packed union { u: u8, i: i8 } = .{ .u = 255 },
-        b: packed union { u: u16, i: i16 } = .{ .u = 255 },
+    const StructOfUnions = packed struct(u24) {
+        a: packed union(u8) { u: u8, i: i8 } = .{ .u = 255 },
+        b: packed union(u16) { u: u16, i: i16 } = .{ .u = 255 },
 
         const Self = @This();
-        pub const Int = @Type(.{ .int = .{ .signedness = .unsigned, .bits = @bitSizeOf(Self) } });
+        pub const Int = @Int(.unsigned, @bitSizeOf(Self));
     };
-    const UnionOfStructs = packed union {
-        a: packed struct { f1: u16 = 0xFFFF, f2: u8 = 0xFF },
-        b: packed struct { f1: u8 = 0xFF, f2: u16 = 0xFFFF },
+    const UnionOfStructs = packed union(u24) {
+        a: packed struct(u24) { f1: u16 = 0xFFFF, f2: u8 = 0xFF },
+        b: packed struct(u24) { f1: u8 = 0xFF, f2: u16 = 0xFFFF },
 
         const Self = @This();
-        pub const Int = @Type(.{ .int = .{ .signedness = .unsigned, .bits = @bitSizeOf(Self) } });
+        pub const Int = @Int(.unsigned, @bitSizeOf(Self));
     };
     const Frame = struct {
         struct_of_unions: StructOfUnions = .{},

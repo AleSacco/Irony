@@ -5,6 +5,7 @@ const dll = @import("../../dll.zig");
 const sdk = @import("../../sdk/root.zig");
 const core = @import("../core/root.zig");
 const model = @import("../model/root.zig");
+const ui = @import("root.zig");
 
 pub const FileMenuConfig = struct {
     Controller: type = core.Controller,
@@ -18,6 +19,7 @@ pub fn FileMenu(comptime config: FileMenuConfig) type {
         menu_bar: MenuBar = .{},
         unsaved_dialog: UnsavedDialog = .{},
         save_dialog: FileDialog = .{ .type = .save },
+        confirm_overwrite_dialog: ConfirmOverwriteDialog = .{},
         open_dialog: FileDialog = .{ .type = .open },
 
         const Self = @This();
@@ -33,13 +35,14 @@ pub fn FileMenu(comptime config: FileMenuConfig) type {
             start,
             unsaved_dialog,
             save_dialog,
+            confirm_overwrite,
             save_in_progress,
             open_dialog,
             open_in_progress,
-            finnish,
+            finish,
         };
 
-        pub fn update(self: *Self, controller: *config.Controller) void {
+        pub fn update(self: *Self, io: std.Io, controller: *config.Controller) void {
             var action = self.action;
             defer self.action = action;
             var progress = self.progress;
@@ -61,7 +64,7 @@ pub fn FileMenu(comptime config: FileMenuConfig) type {
             if (action != .idle and progress == .start) {
                 progress = switch (action) {
                     .idle => unreachable,
-                    .new, .exit => if (unsaved_changes) .unsaved_dialog else .finnish,
+                    .new, .exit => if (unsaved_changes) .unsaved_dialog else .finish,
                     .open => if (unsaved_changes) .unsaved_dialog else .open_dialog,
                     .save => if (file_path == null) .save_dialog else .save_in_progress,
                     .save_as => .save_dialog,
@@ -74,7 +77,7 @@ pub fn FileMenu(comptime config: FileMenuConfig) type {
                     .save => progress = if (file_path == null) .save_dialog else .save_in_progress,
                     .dont_save => switch (action) {
                         .idle, .save, .save_as => unreachable,
-                        .new, .exit => progress = .finnish,
+                        .new, .exit => progress = .finish,
                         .open => progress = .open_dialog,
                     },
                     .cancel => {
@@ -87,24 +90,36 @@ pub fn FileMenu(comptime config: FileMenuConfig) type {
             if (progress == .save_dialog) {
                 switch (self.save_dialog.action) {
                     .no_action => {},
-                    .proceed => progress = .save_in_progress,
+                    .proceed => {
+                        const path = self.save_dialog.getLastSelectedPath() orelse unreachable;
+                        progress = if (fileExists(io, path)) .confirm_overwrite else .save_in_progress;
+                    },
                     .cancel => {
                         action = .idle;
                         progress = .start;
+                        self.save_dialog.last_selected_path = .empty;
                     },
+                }
+            }
+
+            if (progress == .confirm_overwrite) {
+                switch (self.confirm_overwrite_dialog.action) {
+                    .no_action => {},
+                    .confirm => progress = .save_in_progress,
+                    .cancel => progress = .save_dialog,
                 }
             }
 
             if (self.progress != .save_in_progress and progress == .save_in_progress) {
                 const path = self.save_dialog.getLastSelectedPath() orelse file_path orelse unreachable;
-                controller.save(path);
+                controller.save(io, path);
             }
 
             if (progress == .save_in_progress and controller.mode != .save) {
                 if (controller.did_last_save_or_load_succeed) {
                     switch (action) {
                         .idle => unreachable,
-                        .new, .save, .save_as, .exit => progress = .finnish,
+                        .new, .save, .save_as, .exit => progress = .finish,
                         .open => progress = .open_dialog,
                     }
                 } else {
@@ -127,12 +142,12 @@ pub fn FileMenu(comptime config: FileMenuConfig) type {
 
             if (self.progress != .open_in_progress and progress == .open_in_progress) {
                 const path = self.open_dialog.getLastSelectedPath() orelse unreachable;
-                controller.load(path);
+                controller.load(io, path);
             }
 
             if (progress == .open_in_progress and controller.mode != .load) {
                 if (controller.did_last_save_or_load_succeed) {
-                    progress = .finnish;
+                    progress = .finish;
                 } else {
                     action = .idle;
                     progress = .start;
@@ -140,7 +155,7 @@ pub fn FileMenu(comptime config: FileMenuConfig) type {
                 self.open_dialog.last_selected_path = .empty;
             }
 
-            if (progress == .finnish) {
+            if (progress == .finish) {
                 switch (action) {
                     .idle => unreachable,
                     .open, .save, .save_as => {},
@@ -154,20 +169,39 @@ pub fn FileMenu(comptime config: FileMenuConfig) type {
 
         pub fn draw(
             self: *Self,
-            base_dir: *const sdk.misc.BaseDir,
+            io: std.Io,
             file_dialog_context: *imgui.ImGuiFileDialog,
             controller: *config.Controller,
             is_ui_open: *bool,
         ) void {
             self.menu_bar.draw(self.action == .idle, controller.getTotalFrames() == 0);
             self.unsaved_dialog.draw(self.progress == .unsaved_dialog);
-            self.save_dialog.draw(file_dialog_context, base_dir, controller.getFilePath(), self.progress == .save_dialog);
-            self.open_dialog.draw(file_dialog_context, base_dir, controller.getFilePath(), self.progress == .open_dialog);
+            self.save_dialog.draw(
+                file_dialog_context,
+                io,
+                self.save_dialog.getLastSelectedPath() orelse controller.getFilePath(),
+                self.progress == .save_dialog,
+            );
+            self.confirm_overwrite_dialog.draw(self.progress == .confirm_overwrite);
+            self.open_dialog.draw(file_dialog_context, io, controller.getFilePath(), self.progress == .open_dialog);
 
             if (self.menu_bar.action == .close_ui and is_ui_open.*) {
                 is_ui_open.* = false;
                 sdk.ui.toasts.send(.default, null, "UI closed. Press [Tab] to open it again.", .{});
             }
+        }
+
+        fn fileExists(io: std.Io, path: []const u8) bool {
+            std.Io.Dir.cwd().access(io, path, .{}) catch |err| switch (err) {
+                error.FileNotFound => return false,
+                else => {
+                    // Assuming the file exists, so that the user gets asked before anything gets overwritten.
+                    sdk.misc.error_context.new("Failed to check if file exists: {s}", .{path});
+                    sdk.misc.error_context.logError(err);
+                    return true;
+                },
+            };
+            return true;
         }
     };
 }
@@ -190,88 +224,126 @@ const MenuBar = struct {
         var action = Action.no_action;
         defer self.action = action;
 
+        const can_new = is_idle and !is_recording_empty;
+        const can_open = is_idle;
+        const can_save = is_idle and !is_recording_empty;
+        const can_exit = is_idle;
+
+        if (imgui.igGetTopMostPopupModal() == null) {
+            const route = imgui.ImGuiInputFlags_RouteGlobal;
+            if (can_new and imgui.igShortcut_Nil(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_N, route)) {
+                action = .new;
+            }
+            if (can_open and imgui.igShortcut_Nil(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_O, route)) {
+                action = .open;
+            }
+            if (can_save and imgui.igShortcut_Nil(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_S, route)) {
+                action = .save;
+            }
+            if (can_save and imgui.igShortcut_Nil(imgui.ImGuiMod_Ctrl | imgui.ImGuiMod_Shift | imgui.ImGuiKey_S, route)) {
+                action = .save_as;
+            }
+            if (can_exit and imgui.igShortcut_Nil(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_Q, route)) {
+                action = .exit;
+            }
+        }
+
         if (!imgui.igBeginMenu("File", true)) {
             return;
         }
         defer imgui.igEndMenu();
 
-        imgui.igBeginDisabled(!is_idle);
-        imgui.igBeginDisabled(is_recording_empty);
-        if (imgui.igMenuItem_Bool("New", null, false, true)) {
+        if (imgui.igMenuItem_Bool("New", "Ctrl + N", false, can_new)) {
             action = .new;
         }
-        imgui.igEndDisabled();
-        if (imgui.igMenuItem_Bool("Open", null, false, true)) {
+        if (imgui.igMenuItem_Bool("Open", "Ctrl + O", false, can_open)) {
             action = .open;
         }
-        imgui.igBeginDisabled(is_recording_empty);
-        if (imgui.igMenuItem_Bool("Save", null, false, true)) {
+        if (imgui.igMenuItem_Bool("Save", "Ctrl + S", false, can_save)) {
             action = .save;
         }
-        if (imgui.igMenuItem_Bool("Save As", null, false, true)) {
+        if (imgui.igMenuItem_Bool("Save As", "Ctrl + Shift + S", false, can_save)) {
             action = .save_as;
         }
-        imgui.igEndDisabled();
-        imgui.igEndDisabled();
         imgui.igSeparator();
-        if (imgui.igMenuItem_Bool("Close UI", null, false, true)) {
+        if (imgui.igMenuItem_Bool("Close UI", "Tab", false, true)) {
             action = .close_ui;
         }
-        imgui.igBeginDisabled(!is_idle);
-        if (imgui.igMenuItem_Bool("Exit " ++ build_info.display_name, null, false, true)) {
+        if (imgui.igMenuItem_Bool("Exit " ++ build_info.display_name, "Ctrl + Q", false, can_exit)) {
             action = .exit;
         }
-        imgui.igEndDisabled();
     }
 };
 
 const UnsavedDialog = struct {
-    is_open: bool = false,
     action: Action = .no_action,
 
     const Self = @This();
     pub const Action = enum { no_action, save, dont_save, cancel };
 
     pub fn draw(self: *Self, is_open: bool) void {
-        defer self.is_open = is_open;
         var action = Action.no_action;
         defer self.action = action;
 
-        if (!self.is_open and is_open) {
-            imgui.igOpenPopup_Str("Unsaved Changes", 0);
-        }
-
-        var remains_open = self.is_open or is_open;
-        if (!imgui.igBeginPopupModal(
-            "Unsaved Changes",
-            &remains_open,
-            imgui.ImGuiWindowFlags_AlwaysAutoResize,
-        )) {
+        var next_open = is_open;
+        if (!ui.beginDialog(&next_open, "Unsaved Changes")) {
+            if (is_open and !next_open) {
+                action = .cancel;
+            }
             return;
         }
-        defer imgui.igEndPopup();
+        defer ui.endDialog();
+
+        const s_pressed = imgui.igShortcut_Nil(imgui.ImGuiKey_S, imgui.ImGuiInputFlags_RouteFocused);
+        const d_pressed = imgui.igShortcut_Nil(imgui.ImGuiKey_D, imgui.ImGuiInputFlags_RouteFocused);
+        const escape_pressed = imgui.igShortcut_Nil(imgui.ImGuiKey_Escape, imgui.ImGuiInputFlags_RouteFocused);
 
         imgui.igText("Do you want to save changes of current file before continuing?");
         imgui.igText("Any recorded data that is not saved will be lost.");
         imgui.igSeparator();
-        if (imgui.igButton("Save", .{})) {
+        if (imgui.igButton("Save", .{}) or s_pressed) {
             action = .save;
         }
+        if (imgui.igIsItemHovered(0)) {
+            imgui.igSetTooltip("[S]");
+        }
         imgui.igSameLine(0, -1);
-        if (imgui.igButton("Don't Save", .{})) {
+        if (imgui.igButton("Don't Save", .{}) or d_pressed) {
             action = .dont_save;
         }
+        if (imgui.igIsItemHovered(0)) {
+            imgui.igSetTooltip("[D]");
+        }
         imgui.igSameLine(0, -1);
-        if (imgui.igButton("Cancel", .{})) {
+        if (imgui.igButton("Cancel", .{}) or escape_pressed) {
             action = .cancel;
+        }
+        if (imgui.igIsItemHovered(0)) {
+            imgui.igSetTooltip("[Esc]");
         }
         imgui.igSetItemDefaultFocus();
-        if (!remains_open) {
-            action = .cancel;
-        }
-        if (!is_open) {
-            imgui.igCloseCurrentPopup();
-        }
+    }
+};
+
+const ConfirmOverwriteDialog = struct {
+    action: Action = .no_action,
+
+    const Self = @This();
+    pub const Action = enum { no_action, confirm, cancel };
+
+    pub fn draw(self: *Self, is_open: bool) void {
+        var open = is_open;
+        self.action = switch (ui.drawConfirmDialog(
+            &open,
+            "File Already Exists",
+            "The selected file already exists. Do you want to overwrite it?",
+            "Overwrite",
+            "Cancel",
+        )) {
+            .none => .no_action,
+            .confirm => .confirm,
+            .abort => .cancel,
+        };
     }
 };
 
@@ -346,7 +418,7 @@ const FileDialog = struct {
     pub fn draw(
         self: *Self,
         context: *imgui.ImGuiFileDialog,
-        base_dir: *const sdk.misc.BaseDir,
+        io: std.Io,
         current_path: ?[:0]const u8,
         is_open: bool,
     ) void {
@@ -372,41 +444,34 @@ const FileDialog = struct {
                                 .{path},
                             );
                             sdk.misc.error_context.logError(err);
-                            break :block base_dir.get();
+                            break :block getBaseDirectory(&buffer_2, io);
                         };
                     } else {
-                        config.fileName = getTimestampFileName(&buffer_1) catch |err| block: {
+                        config.fileName = getTimestampFileName(&buffer_1, io) catch |err| block: {
                             sdk.misc.error_context.append("Failed to construct a timestamp based file name.", .{});
                             sdk.misc.error_context.logError(err);
                             break :block "untitled";
                         };
-                        config.path = createAndGetRecordingsDirectory(&buffer_2, base_dir) catch |err| block: {
+                        config.path = createAndGetRecordingsDirectory(&buffer_2, io) catch |err_1| block: {
                             sdk.misc.error_context.append("Failed to create \"{s}\" directory.", .{directory_name});
-                            sdk.misc.error_context.logError(err);
-                            break :block base_dir.get();
+                            sdk.misc.error_context.logError(err_1);
+                            break :block getBaseDirectory(&buffer_2, io);
                         };
                     }
-                    config.flags |= imgui.ImGuiFileDialogFlags_ConfirmOverwrite;
                     config.flags |= imgui.ImGuiFileDialogFlags_CaseInsensitiveExtentionFiltering;
                 },
                 .open => {
-                    config.path = createAndGetRecordingsDirectory(&buffer_1, base_dir) catch |err| block: {
+                    config.path = createAndGetRecordingsDirectory(&buffer_1, io) catch |err| block: {
                         sdk.misc.error_context.append("Failed to create \"{s}\" directory.", .{directory_name});
                         sdk.misc.error_context.logError(err);
-                        break :block base_dir.get();
+                        break :block getBaseDirectory(&buffer_2, io);
                     };
                 },
             }
             imgui.IGFD_OpenDialog(
                 context,
-                switch (self.type) {
-                    .save => "save_dialog",
-                    .open => "open_dialog",
-                },
-                switch (self.type) {
-                    .save => "Save As",
-                    .open => "Open",
-                },
+                getKey(self.type),
+                getTitle(self.type),
                 switch (self.type) {
                     .save => save_filters,
                     .open => open_filters,
@@ -415,20 +480,24 @@ const FileDialog = struct {
             );
         }
         if (self.is_open and !is_open) {
-            defer imgui.IGFD_CloseDialog(context);
+            imgui.IGFD_CloseDialog(context);
         }
 
         const display_size = imgui.igGetIO_Nil().*.DisplaySize;
         const has_action = imgui.IGFD_DisplayDialog(
             context,
-            switch (self.type) {
-                .save => "save_dialog",
-                .open => "open_dialog",
-            },
+            getKey(self.type),
             imgui.ImGuiWindowFlags_NoCollapse,
             .{ .x = 0.5 * display_size.x, .y = 0.5 * display_size.y },
             .{ .x = display_size.x, .y = display_size.y },
         );
+        if (self.is_open and is_open and imgui.igShortcut_Nil(
+            imgui.ImGuiKey_Escape,
+            imgui.ImGuiInputFlags_RouteGlobal | imgui.ImGuiInputFlags_RouteOverActive,
+        )) {
+            self.action = .cancel;
+            return;
+        }
         if (!has_action or !is_open) {
             self.action = .no_action;
             return;
@@ -454,40 +523,63 @@ const FileDialog = struct {
         self.action = .proceed;
     }
 
-    fn createAndGetRecordingsDirectory(
-        buffer: *[sdk.os.max_file_path_length]u8,
-        base_dir: *const sdk.misc.BaseDir,
-    ) ![:0]const u8 {
-        const path = base_dir.getPath(buffer, directory_name) catch |err| {
-            sdk.misc.error_context.append("Failed to construct \"{s}\" directory path.", .{directory_name});
-            return err;
+    fn getKey(dialog_type: Type) [:0]const u8 {
+        return switch (dialog_type) {
+            .save => "save_dialog",
+            .open => "open_dialog",
         };
-        std.fs.cwd().makePath(path) catch |err| {
-            sdk.misc.error_context.append("Failed to make directory: {s}", .{path});
-            return err;
-        };
-        return path;
     }
 
-    fn getTimestampFileName(buffer: []u8) ![:0]const u8 {
-        const nano = std.time.nanoTimestamp();
+    fn getTitle(dialog_type: Type) [:0]const u8 {
+        return switch (dialog_type) {
+            .save => "Save As",
+            .open => "Open",
+        };
+    }
+
+    fn getBaseDirectory(buffer: *[sdk.os.max_file_path_length]u8, io: std.Io) [:0]const u8 {
+        const len = std.Io.Dir.cwd().realPath(io, buffer[0..(buffer.len - 1)]) catch |err| {
+            sdk.misc.error_context.new("Failed to construct base directory path.", .{});
+            sdk.misc.error_context.logError(err);
+            return ".";
+        };
+        buffer[len] = 0;
+        return buffer[0..len :0];
+    }
+
+    fn createAndGetRecordingsDirectory(buffer: *[sdk.os.max_file_path_length]u8, io: std.Io) ![:0]const u8 {
+        std.Io.Dir.cwd().createDirPath(io, directory_name) catch |err| {
+            sdk.misc.error_context.new("Failed to make directory: {s}", .{directory_name});
+            return err;
+        };
+        const len = std.Io.Dir.cwd().realPathFile(io, directory_name, buffer[0..(buffer.len - 1)]) catch |err| {
+            sdk.misc.error_context.new("Failed to construct \"{s}\" directory path.", .{directory_name});
+            return err;
+        };
+        buffer[len] = 0;
+        return buffer[0..len :0];
+    }
+
+    fn getTimestampFileName(buffer: []u8, io: std.Io) ![:0]const u8 {
+        const nano = std.Io.Clock.real.now(io).nanoseconds;
         const ts = sdk.misc.Timestamp.fromNano(nano, .local) catch |err| {
             sdk.misc.error_context.append("Failed to construct timestamp structure for nano timestamp: {}", .{nano});
             return err;
         };
-        return std.fmt.bufPrintZ(
+        return std.fmt.bufPrintSentinel(
             buffer,
             "{:0>4}-{:0>2}-{:0>2}T{:0>2}-{:0>2}-{:0>2}",
             .{ @abs(ts.year), ts.month, ts.day, ts.hour, ts.minute, ts.second },
+            0,
         ) catch |err| {
-            sdk.misc.error_context.append("Failed to construct timestamp string for nano time: {}", .{nano});
+            sdk.misc.error_context.new("Failed to construct timestamp string for nano timestamp: {}", .{nano});
             return err;
         };
     }
 
     fn filePathToDirectoryPath(buffer: []u8, file_path: []const u8) ![:0]const u8 {
         const directory_path = sdk.os.filePathToDirectoryPath(file_path);
-        return std.fmt.bufPrintZ(buffer, "{s}", .{directory_path}) catch |err| {
+        return std.fmt.bufPrintSentinel(buffer, "{s}", .{directory_path}, 0) catch |err| {
             sdk.misc.error_context.new("Failed to put the result string into buffer: {s}", .{directory_path});
             return err;
         };
@@ -500,7 +592,7 @@ const FileDialog = struct {
         };
         const file_name = sdk.os.pathToFileName(file_path);
         const result = file_name[0..(file_name.len - extension.len)];
-        return std.fmt.bufPrintZ(buffer, "{s}", .{result}) catch |err| {
+        return std.fmt.bufPrintSentinel(buffer, "{s}", .{result}, 0) catch |err| {
             sdk.misc.error_context.new("Failed to put the result string into buffer: {s}", .{result});
             return err;
         };
@@ -515,7 +607,6 @@ const FileDialog = struct {
 };
 
 const testing = std.testing;
-const testing_base_dir = sdk.misc.BaseDir.fromStr("test_assets") catch unreachable;
 
 const MockController = struct {
     mode: Mode = .live,
@@ -525,8 +616,10 @@ const MockController = struct {
     total_frames: usize = 100,
     clear_call_count: usize = 0,
     save_call_count: usize = 0,
+    last_save_io: ?std.Io = null,
     last_save_path: ?FilePath = null,
     load_call_count: usize = 0,
+    last_load_io: ?std.Io = null,
     last_load_path: ?FilePath = null,
 
     const Self = @This();
@@ -546,14 +639,16 @@ const MockController = struct {
         self.mode = .live;
     }
 
-    pub fn save(self: *Self, path: []const u8) void {
+    pub fn save(self: *Self, io: std.Io, path: []const u8) void {
         self.save_call_count += 1;
+        self.last_save_io = io;
         self.last_save_path = .fromSliceTrimmed(path);
         self.mode = .save;
     }
 
-    pub fn load(self: *Self, path: []const u8) void {
+    pub fn load(self: *Self, io: std.Io, path: []const u8) void {
         self.load_call_count += 1;
+        self.last_load_io = io;
         self.last_load_path = .fromSliceTrimmed(path);
         self.mode = .load;
     }
@@ -587,8 +682,8 @@ test "should call clear on controller when new is clicked without unsaved change
             defer imgui.igEnd();
             if (!imgui.igBeginMenuBar()) return;
             defer imgui.igEndMenuBar();
-            file_menu.draw(&testing_base_dir, file_dialog_context, &controller, &is_ui_open);
-            file_menu.update(&controller);
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
         }
 
         fn testFunction(ctx: sdk.ui.TestContext) !void {
@@ -618,8 +713,8 @@ test "new should be disabled when total frames is zero" {
             defer imgui.igEnd();
             if (!imgui.igBeginMenuBar()) return;
             defer imgui.igEndMenuBar();
-            file_menu.draw(&testing_base_dir, file_dialog_context, &controller, &is_ui_open);
-            file_menu.update(&controller);
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
         }
 
         fn testFunction(ctx: sdk.ui.TestContext) !void {
@@ -654,8 +749,8 @@ test "should show correctly working unsaved changes dialog when new is clicked w
             defer imgui.igEnd();
             if (!imgui.igBeginMenuBar()) return;
             defer imgui.igEndMenuBar();
-            file_menu.draw(&testing_base_dir, file_dialog_context, &controller, &is_ui_open);
-            file_menu.update(&controller);
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
         }
 
         fn testFunction(ctx: sdk.ui.TestContext) !void {
@@ -706,11 +801,105 @@ test "should show correctly working unsaved changes dialog when new is clicked w
             try testing.expectEqual(1, controller.save_call_count);
             try testing.expectEqual(1, controller.clear_call_count);
             try testing.expectStringEndsWith(controller.last_save_path.?.asSlice(), "test.irony");
+            try testing.expectEqual(testing.io, controller.last_save_io);
             controller.mode = .live;
             controller.did_last_save_or_load_succeed = true;
             ctx.yield(1);
             try testing.expectEqual(1, controller.save_call_count);
             try testing.expectEqual(2, controller.clear_call_count);
+        }
+    };
+    Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
+    defer imgui.IGFD_Destroy(Test.file_dialog_context);
+    const context = try sdk.ui.getTestingContext();
+    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
+}
+
+test "unsaved changes dialog should react to keyboard shortcuts" {
+    const Test = struct {
+        var file_dialog_context: *imgui.ImGuiFileDialog = undefined;
+        var controller: MockController = .{
+            .contains_unsaved_changes = true,
+            .file_path = .fromArray("./test.irony".*),
+        };
+        var is_ui_open: bool = true;
+        var file_menu: FileMenu(.{ .Controller = MockController, .selfShutDown = selfShutdown }) = .{};
+
+        fn selfShutdown() void {}
+
+        fn guiFunction(_: sdk.ui.TestContext) !void {
+            _ = imgui.igBegin("Window", null, imgui.ImGuiWindowFlags_MenuBar);
+            defer imgui.igEnd();
+            if (!imgui.igBeginMenuBar()) return;
+            defer imgui.igEndMenuBar();
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
+        }
+
+        fn testFunction(ctx: sdk.ui.TestContext) !void {
+            ctx.setRef("Window");
+            ctx.menuClick("File/New");
+            ctx.keyPress(imgui.ImGuiKey_Escape, 1);
+            ctx.yield(3); // Test engine caches item lookups for 2 frames.
+            try testing.expectEqual(0, controller.save_call_count);
+            try testing.expectEqual(0, controller.clear_call_count);
+            try ctx.expectItemNotExists("//Unsaved Changes/Cancel");
+
+            ctx.setRef("Window");
+            ctx.menuClick("File/New");
+            ctx.keyPress(imgui.ImGuiKey_D, 1);
+            ctx.yield(3); // Test engine caches item lookups for 2 frames.
+            try testing.expectEqual(0, controller.save_call_count);
+            try testing.expectEqual(1, controller.clear_call_count);
+            try ctx.expectItemNotExists("//Unsaved Changes/Cancel");
+
+            ctx.setRef("Window");
+            ctx.menuClick("File/New");
+            ctx.keyPress(imgui.ImGuiKey_S, 1);
+            try testing.expectEqual(1, controller.save_call_count);
+            try testing.expectEqual(1, controller.clear_call_count);
+            try testing.expectStringEndsWith(controller.last_save_path.?.asSlice(), "test.irony");
+            controller.mode = .live;
+            controller.did_last_save_or_load_succeed = true;
+            ctx.yield(3); // Test engine caches item lookups for 2 frames.
+            try testing.expectEqual(1, controller.save_call_count);
+            try testing.expectEqual(2, controller.clear_call_count);
+            try ctx.expectItemNotExists("//Unsaved Changes/Cancel");
+        }
+    };
+    Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
+    defer imgui.IGFD_Destroy(Test.file_dialog_context);
+    const context = try sdk.ui.getTestingContext();
+    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
+}
+
+test "unsaved changes dialog shortcuts should do nothing when dialog is closed" {
+    const Test = struct {
+        var file_dialog_context: *imgui.ImGuiFileDialog = undefined;
+        var controller: MockController = .{
+            .contains_unsaved_changes = true,
+            .file_path = .fromArray("./test.irony".*),
+        };
+        var is_ui_open: bool = true;
+        var file_menu: FileMenu(.{ .Controller = MockController, .selfShutDown = selfShutdown }) = .{};
+
+        fn selfShutdown() void {}
+
+        fn guiFunction(_: sdk.ui.TestContext) !void {
+            _ = imgui.igBegin("Window", null, imgui.ImGuiWindowFlags_MenuBar);
+            defer imgui.igEnd();
+            if (!imgui.igBeginMenuBar()) return;
+            defer imgui.igEndMenuBar();
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
+        }
+
+        fn testFunction(ctx: sdk.ui.TestContext) !void {
+            ctx.keyPress(imgui.ImGuiKey_S, 1);
+            ctx.keyPress(imgui.ImGuiKey_D, 1);
+            ctx.keyPress(imgui.ImGuiKey_Escape, 1);
+            try testing.expectEqual(0, controller.save_call_count);
+            try testing.expectEqual(0, controller.clear_call_count);
         }
     };
     Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
@@ -736,8 +925,8 @@ test "should call load on controller when open is clicked without unsaved change
             defer imgui.igEnd();
             if (!imgui.igBeginMenuBar()) return;
             defer imgui.igEndMenuBar();
-            file_menu.draw(&testing_base_dir, file_dialog_context, &controller, &is_ui_open);
-            file_menu.update(&controller);
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
         }
 
         fn testFunction(ctx: sdk.ui.TestContext) !void {
@@ -757,8 +946,373 @@ test "should call load on controller when open is clicked without unsaved change
             ctx.itemInputValueStr("**/##FileName", "test"); // Presses enter so no need to click OK.
             try testing.expectEqual(1, controller.load_call_count);
             try testing.expectStringEndsWith(controller.last_load_path.?.asSlice(), "test.irony");
+            try testing.expectEqual(testing.io, controller.last_load_io);
         }
     };
+    Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
+    defer imgui.IGFD_Destroy(Test.file_dialog_context);
+    const context = try sdk.ui.getTestingContext();
+    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
+}
+
+test "open dialog should focus file name input when opened" {
+    const Test = struct {
+        var file_dialog_context: *imgui.ImGuiFileDialog = undefined;
+        var controller: MockController = .{ .contains_unsaved_changes = false };
+        var is_ui_open: bool = true;
+        var file_menu: FileMenu(.{ .Controller = MockController, .selfShutDown = selfShutdown }) = .{};
+
+        fn selfShutdown() void {}
+
+        fn guiFunction(_: sdk.ui.TestContext) !void {
+            _ = imgui.igBegin("Window", null, imgui.ImGuiWindowFlags_MenuBar);
+            defer imgui.igEnd();
+            if (!imgui.igBeginMenuBar()) return;
+            defer imgui.igEndMenuBar();
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
+        }
+
+        fn testFunction(ctx: sdk.ui.TestContext) !void {
+            for (0..2) |_| { // Second iteration checks that focus is requested again when the dialog is reopened.
+                ctx.setRef("Window");
+                ctx.menuClick("File/Open");
+                ctx.yield(1);
+                ctx.keyChars("test");
+                ctx.keyPress(imgui.ImGuiKey_Enter, 1);
+                controller.mode = .live;
+                controller.did_last_save_or_load_succeed = true;
+                ctx.yield(1);
+            }
+            try testing.expectEqual(2, controller.load_call_count);
+            try testing.expectEqualStrings("test.irony", sdk.os.pathToFileName(controller.last_load_path.?.asSlice()));
+        }
+    };
+    Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
+    defer imgui.IGFD_Destroy(Test.file_dialog_context);
+    const context = try sdk.ui.getTestingContext();
+    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
+}
+
+test "save dialog should focus file name input and select its content when opened" {
+    const Test = struct {
+        var file_dialog_context: *imgui.ImGuiFileDialog = undefined;
+        var controller: MockController = .{ .file_path = .empty };
+        var is_ui_open: bool = true;
+        var file_menu: FileMenu(.{ .Controller = MockController, .selfShutDown = selfShutdown }) = .{};
+
+        fn selfShutdown() void {}
+
+        fn guiFunction(_: sdk.ui.TestContext) !void {
+            _ = imgui.igBegin("Window", null, imgui.ImGuiWindowFlags_MenuBar);
+            defer imgui.igEnd();
+            if (!imgui.igBeginMenuBar()) return;
+            defer imgui.igEndMenuBar();
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
+        }
+
+        fn testFunction(ctx: sdk.ui.TestContext) !void {
+            ctx.setRef("Window");
+            ctx.menuClick("File/Save As");
+            ctx.yield(1);
+            ctx.keyChars("test");
+            ctx.keyPress(imgui.ImGuiKey_Enter, 1);
+            ctx.yield(1);
+            try testing.expectEqual(1, controller.save_call_count);
+            try testing.expectEqualStrings("test.irony", sdk.os.pathToFileName(controller.last_save_path.?.asSlice()));
+        }
+    };
+    Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
+    defer imgui.IGFD_Destroy(Test.file_dialog_context);
+    const context = try sdk.ui.getTestingContext();
+    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
+}
+
+test "escape should cancel open dialog" {
+    const Test = struct {
+        var file_dialog_context: *imgui.ImGuiFileDialog = undefined;
+        var controller: MockController = .{ .contains_unsaved_changes = false };
+        var is_ui_open: bool = true;
+        var file_menu: FileMenu(.{ .Controller = MockController, .selfShutDown = selfShutdown }) = .{};
+
+        fn selfShutdown() void {}
+
+        fn guiFunction(_: sdk.ui.TestContext) !void {
+            _ = imgui.igBegin("Window", null, imgui.ImGuiWindowFlags_MenuBar);
+            defer imgui.igEnd();
+            if (!imgui.igBeginMenuBar()) return;
+            defer imgui.igEndMenuBar();
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
+        }
+
+        fn testFunction(ctx: sdk.ui.TestContext) !void {
+            ctx.setRef("Window");
+            ctx.menuClick("File/Open");
+            ctx.yield(1);
+            ctx.keyChars("test"); // Makes sure the file name input is active and handling keys.
+            ctx.yield(10);
+            ctx.keyPress(imgui.ImGuiKey_Escape, 1);
+            ctx.yield(3); // Test engine caches item lookups for 2 frames.
+            try ctx.expectItemNotExists("//Open##open_dialog/**/##FileName");
+            try testing.expectEqual(0, controller.load_call_count);
+
+            // Dialog should be usable again after being cancelled.
+            ctx.setRef("Window");
+            ctx.menuClick("File/Open");
+            ctx.yield(1);
+            ctx.keyChars("test");
+            ctx.keyPress(imgui.ImGuiKey_Enter, 1);
+            try testing.expectEqual(1, controller.load_call_count);
+            try testing.expectEqualStrings("test.irony", sdk.os.pathToFileName(controller.last_load_path.?.asSlice()));
+        }
+    };
+    Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
+    defer imgui.IGFD_Destroy(Test.file_dialog_context);
+    const context = try sdk.ui.getTestingContext();
+    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
+}
+
+test "escape should cancel save dialog" {
+    const Test = struct {
+        var file_dialog_context: *imgui.ImGuiFileDialog = undefined;
+        var controller: MockController = .{ .file_path = .empty };
+        var is_ui_open: bool = true;
+        var file_menu: FileMenu(.{ .Controller = MockController, .selfShutDown = selfShutdown }) = .{};
+
+        fn selfShutdown() void {}
+
+        fn guiFunction(_: sdk.ui.TestContext) !void {
+            _ = imgui.igBegin("Window", null, imgui.ImGuiWindowFlags_MenuBar);
+            defer imgui.igEnd();
+            if (!imgui.igBeginMenuBar()) return;
+            defer imgui.igEndMenuBar();
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
+        }
+
+        fn testFunction(ctx: sdk.ui.TestContext) !void {
+            ctx.setRef("Window");
+            ctx.menuClick("File/Save As");
+            ctx.yield(1);
+            ctx.keyChars("test"); // Makes sure the file name input is active and handling keys.
+            ctx.yield(10);
+            ctx.keyPress(imgui.ImGuiKey_Escape, 1);
+            ctx.yield(3); // Test engine caches item lookups for 2 frames.
+            try ctx.expectItemNotExists("//Save As##save_dialog/**/##FileName");
+            try testing.expectEqual(0, controller.save_call_count);
+        }
+    };
+    Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
+    defer imgui.IGFD_Destroy(Test.file_dialog_context);
+    const context = try sdk.ui.getTestingContext();
+    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
+}
+
+const existing_recording_path = "recordings/existing.irony";
+
+fn createExistingRecording() !void {
+    try std.Io.Dir.cwd().createDirPath(testing.io, "recordings");
+    const file = try std.Io.Dir.cwd().createFile(testing.io, existing_recording_path, .{});
+    file.close(testing.io);
+}
+
+fn deleteExistingRecording() void {
+    std.Io.Dir.cwd().deleteFile(testing.io, existing_recording_path) catch {
+        @panic("Failed to clean up file: " ++ existing_recording_path);
+    };
+}
+
+test "should ask for overwrite confirmation when saving over an existing file" {
+    const Test = struct {
+        var file_dialog_context: *imgui.ImGuiFileDialog = undefined;
+        var controller: MockController = .{ .file_path = .empty };
+        var is_ui_open: bool = true;
+        var file_menu: FileMenu(.{ .Controller = MockController, .selfShutDown = selfShutdown }) = .{};
+
+        fn selfShutdown() void {}
+
+        fn guiFunction(_: sdk.ui.TestContext) !void {
+            _ = imgui.igBegin("Window", null, imgui.ImGuiWindowFlags_MenuBar);
+            defer imgui.igEnd();
+            if (!imgui.igBeginMenuBar()) return;
+            defer imgui.igEndMenuBar();
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
+        }
+
+        fn testFunction(ctx: sdk.ui.TestContext) !void {
+            ctx.setRef("Window");
+            ctx.menuClick("File/Save As");
+            ctx.yield(1);
+            ctx.keyChars("existing");
+            ctx.keyPress(imgui.ImGuiKey_Enter, 1);
+            ctx.yield(3); // Test engine caches item lookups for 2 frames.
+            try ctx.expectItemNotExists("//Save As##save_dialog/**/##FileName");
+            try ctx.expectItemExists("//File Already Exists/Overwrite");
+            try testing.expectEqual(0, controller.save_call_count);
+
+            ctx.setRef("//File Already Exists");
+            ctx.itemClick("Overwrite", imgui.ImGuiMouseButton_Left, 0);
+            try testing.expectEqual(1, controller.save_call_count);
+            try testing.expectEqualStrings("existing.irony", sdk.os.pathToFileName(controller.last_save_path.?.asSlice()));
+            ctx.yield(3); // Test engine caches item lookups for 2 frames.
+            try ctx.expectItemNotExists("//File Already Exists/Overwrite");
+        }
+    };
+    try createExistingRecording();
+    defer deleteExistingRecording();
+    Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
+    defer imgui.IGFD_Destroy(Test.file_dialog_context);
+    const context = try sdk.ui.getTestingContext();
+    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
+}
+
+test "cancelling overwrite confirmation should reopen save dialog with the same file name" {
+    const Test = struct {
+        var file_dialog_context: *imgui.ImGuiFileDialog = undefined;
+        var controller: MockController = .{ .file_path = .empty };
+        var is_ui_open: bool = true;
+        var file_menu: FileMenu(.{ .Controller = MockController, .selfShutDown = selfShutdown }) = .{};
+
+        fn selfShutdown() void {}
+
+        fn guiFunction(_: sdk.ui.TestContext) !void {
+            _ = imgui.igBegin("Window", null, imgui.ImGuiWindowFlags_MenuBar);
+            defer imgui.igEnd();
+            if (!imgui.igBeginMenuBar()) return;
+            defer imgui.igEndMenuBar();
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
+        }
+
+        fn testFunction(ctx: sdk.ui.TestContext) !void {
+            ctx.setRef("Window");
+            ctx.menuClick("File/Save As");
+            ctx.yield(1);
+            ctx.keyChars("existing");
+            ctx.keyPress(imgui.ImGuiKey_Enter, 1);
+            ctx.yield(1);
+            try ctx.expectItemExists("//File Already Exists/Cancel");
+
+            ctx.setRef("//File Already Exists");
+            ctx.itemClick("Cancel", imgui.ImGuiMouseButton_Left, 0);
+            ctx.yield(3); // Test engine caches item lookups for 2 frames.
+            try ctx.expectItemNotExists("//File Already Exists/Cancel");
+            try ctx.expectItemExists("//Save As##save_dialog/**/##FileName");
+            try testing.expectEqual(0, controller.save_call_count);
+
+            // File name input is focused and contains the previously selected name, so enter selects the same file.
+            ctx.keyPress(imgui.ImGuiKey_Enter, 1);
+            ctx.yield(1);
+            try ctx.expectItemExists("//File Already Exists/Overwrite");
+            ctx.setRef("//File Already Exists");
+            ctx.itemClick("Overwrite", imgui.ImGuiMouseButton_Left, 0);
+            try testing.expectEqual(1, controller.save_call_count);
+            try testing.expectEqualStrings("existing.irony", sdk.os.pathToFileName(controller.last_save_path.?.asSlice()));
+        }
+    };
+    try createExistingRecording();
+    defer deleteExistingRecording();
+    Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
+    defer imgui.IGFD_Destroy(Test.file_dialog_context);
+    const context = try sdk.ui.getTestingContext();
+    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
+}
+
+test "overwrite confirmation should react to keyboard shortcuts" {
+    const Test = struct {
+        var file_dialog_context: *imgui.ImGuiFileDialog = undefined;
+        var controller: MockController = .{ .file_path = .empty };
+        var is_ui_open: bool = true;
+        var file_menu: FileMenu(.{ .Controller = MockController, .selfShutDown = selfShutdown }) = .{};
+
+        fn selfShutdown() void {}
+
+        fn guiFunction(_: sdk.ui.TestContext) !void {
+            _ = imgui.igBegin("Window", null, imgui.ImGuiWindowFlags_MenuBar);
+            defer imgui.igEnd();
+            if (!imgui.igBeginMenuBar()) return;
+            defer imgui.igEndMenuBar();
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
+        }
+
+        fn testFunction(ctx: sdk.ui.TestContext) !void {
+            ctx.setRef("Window");
+            ctx.menuClick("File/Save As");
+            ctx.yield(1);
+            ctx.keyChars("existing");
+            ctx.keyPress(imgui.ImGuiKey_Enter, 1);
+            ctx.yield(1);
+            try ctx.expectItemExists("//File Already Exists/Cancel");
+
+            ctx.keyPress(imgui.ImGuiKey_Escape, 1);
+            ctx.yield(3); // Test engine caches item lookups for 2 frames.
+            try ctx.expectItemNotExists("//File Already Exists/Cancel");
+            try ctx.expectItemExists("//Save As##save_dialog/**/##FileName");
+            try testing.expectEqual(0, controller.save_call_count);
+
+            ctx.keyPress(imgui.ImGuiKey_Enter, 1);
+            ctx.yield(1);
+            try ctx.expectItemExists("//File Already Exists/Overwrite");
+            ctx.keyPress(imgui.ImGuiKey_Enter, 1);
+            try testing.expectEqual(1, controller.save_call_count);
+            try testing.expectEqualStrings("existing.irony", sdk.os.pathToFileName(controller.last_save_path.?.asSlice()));
+        }
+    };
+    try createExistingRecording();
+    defer deleteExistingRecording();
+    Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
+    defer imgui.IGFD_Destroy(Test.file_dialog_context);
+    const context = try sdk.ui.getTestingContext();
+    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
+}
+
+test "save dialog should not reuse file name from a cancelled save" {
+    const Test = struct {
+        var file_dialog_context: *imgui.ImGuiFileDialog = undefined;
+        var controller: MockController = .{ .file_path = .empty };
+        var is_ui_open: bool = true;
+        var file_menu: FileMenu(.{ .Controller = MockController, .selfShutDown = selfShutdown }) = .{};
+
+        fn selfShutdown() void {}
+
+        fn guiFunction(_: sdk.ui.TestContext) !void {
+            _ = imgui.igBegin("Window", null, imgui.ImGuiWindowFlags_MenuBar);
+            defer imgui.igEnd();
+            if (!imgui.igBeginMenuBar()) return;
+            defer imgui.igEndMenuBar();
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
+        }
+
+        fn testFunction(ctx: sdk.ui.TestContext) !void {
+            ctx.setRef("Window");
+            ctx.menuClick("File/Save As");
+            ctx.yield(1);
+            ctx.keyChars("existing");
+            ctx.keyPress(imgui.ImGuiKey_Enter, 1);
+            ctx.yield(1);
+            ctx.keyPress(imgui.ImGuiKey_Escape, 1); // Cancels overwrite confirmation.
+            ctx.yield(10);
+            ctx.keyPress(imgui.ImGuiKey_Escape, 1); // Cancels save dialog.
+            ctx.yield(3); // Test engine caches item lookups for 2 frames.
+            try ctx.expectItemNotExists("//Save As##save_dialog/**/##FileName");
+
+            // Reopened dialog has the default timestamp name, so enter saves without overwrite confirmation.
+            ctx.setRef("Window");
+            ctx.menuClick("File/Save As");
+            ctx.yield(1);
+            ctx.keyPress(imgui.ImGuiKey_Enter, 1);
+            try testing.expectEqual(1, controller.save_call_count);
+            const file_name = sdk.os.pathToFileName(controller.last_save_path.?.asSlice());
+            try testing.expect(!std.mem.eql(u8, file_name, "existing.irony"));
+        }
+    };
+    try createExistingRecording();
+    defer deleteExistingRecording();
     Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
     defer imgui.IGFD_Destroy(Test.file_dialog_context);
     const context = try sdk.ui.getTestingContext();
@@ -782,8 +1336,8 @@ test "should show correctly working unsaved changes dialog when open is clicked 
             defer imgui.igEnd();
             if (!imgui.igBeginMenuBar()) return;
             defer imgui.igEndMenuBar();
-            file_menu.draw(&testing_base_dir, file_dialog_context, &controller, &is_ui_open);
-            file_menu.update(&controller);
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
         }
 
         fn testFunction(ctx: sdk.ui.TestContext) !void {
@@ -825,6 +1379,7 @@ test "should show correctly working unsaved changes dialog when open is clicked 
             try testing.expectEqual(0, controller.save_call_count);
             try testing.expectEqual(1, controller.load_call_count);
             try testing.expectStringEndsWith(controller.last_load_path.?.asSlice(), "test.irony");
+            try testing.expectEqual(testing.io, controller.last_load_io);
             controller.mode = .live;
             controller.did_last_save_or_load_succeed = false;
             ctx.yield(1);
@@ -855,6 +1410,7 @@ test "should show correctly working unsaved changes dialog when open is clicked 
             try testing.expectEqual(1, controller.save_call_count);
             try testing.expectEqual(1, controller.load_call_count);
             try testing.expectStringEndsWith(controller.last_save_path.?.asSlice(), "test1.irony");
+            try testing.expectEqual(testing.io, controller.last_save_io);
             controller.mode = .live;
             controller.did_last_save_or_load_succeed = true;
             controller.file_path = .fromArray("./test.irony".*); // Makes the next save without a file dialog.
@@ -884,6 +1440,7 @@ test "should show correctly working unsaved changes dialog when open is clicked 
             try testing.expectEqual(2, controller.save_call_count);
             try testing.expectEqual(2, controller.load_call_count);
             try testing.expectStringEndsWith(controller.last_load_path.?.asSlice(), "test2.irony");
+            try testing.expectEqual(testing.io, controller.last_load_io);
         }
     };
     Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
@@ -908,8 +1465,8 @@ test "should call save on controller when save is clicked and file is selected" 
             defer imgui.igEnd();
             if (!imgui.igBeginMenuBar()) return;
             defer imgui.igEndMenuBar();
-            file_menu.draw(&testing_base_dir, file_dialog_context, &controller, &is_ui_open);
-            file_menu.update(&controller);
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
         }
 
         fn testFunction(ctx: sdk.ui.TestContext) !void {
@@ -929,6 +1486,7 @@ test "should call save on controller when save is clicked and file is selected" 
             ctx.itemInputValueStr("**/##FileName", "test"); // Presses enter so no need to click OK.
             try testing.expectEqual(1, controller.save_call_count);
             try testing.expectStringEndsWith(controller.last_save_path.?.asSlice(), "test.irony");
+            try testing.expectEqual(testing.io, controller.last_save_io);
             controller.mode = .live;
             controller.did_last_save_or_load_succeed = true;
             controller.file_path = .fromArray("./test.irony".*); // Makes the next save without a file dialog.
@@ -959,8 +1517,8 @@ test "save should be disabled when total frames is zero" {
             defer imgui.igEnd();
             if (!imgui.igBeginMenuBar()) return;
             defer imgui.igEndMenuBar();
-            file_menu.draw(&testing_base_dir, file_dialog_context, &controller, &is_ui_open);
-            file_menu.update(&controller);
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
         }
 
         fn testFunction(ctx: sdk.ui.TestContext) !void {
@@ -992,8 +1550,8 @@ test "should call save on controller when save as is clicked and file is selecte
             defer imgui.igEnd();
             if (!imgui.igBeginMenuBar()) return;
             defer imgui.igEndMenuBar();
-            file_menu.draw(&testing_base_dir, file_dialog_context, &controller, &is_ui_open);
-            file_menu.update(&controller);
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
         }
 
         fn testFunction(ctx: sdk.ui.TestContext) !void {
@@ -1013,6 +1571,7 @@ test "should call save on controller when save as is clicked and file is selecte
             ctx.itemInputValueStr("**/##FileName", "test1"); // Presses enter so no need to click OK.
             try testing.expectEqual(1, controller.save_call_count);
             try testing.expectStringEndsWith(controller.last_save_path.?.asSlice(), "test1.irony");
+            try testing.expectEqual(testing.io, controller.last_save_io);
             controller.mode = .live;
             controller.did_last_save_or_load_succeed = true;
             controller.file_path = .fromArray("./test.irony".*); // Would make the next save without a file dialog.
@@ -1025,6 +1584,7 @@ test "should call save on controller when save as is clicked and file is selecte
             ctx.itemInputValueStr("**/##FileName", "test2"); // Presses enter so no need to click OK.
             try testing.expectEqual(2, controller.save_call_count);
             try testing.expectStringEndsWith(controller.last_save_path.?.asSlice(), "test2.irony");
+            try testing.expectEqual(testing.io, controller.last_save_io);
         }
     };
     Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
@@ -1047,8 +1607,8 @@ test "save as should be disabled when total frames is zero" {
             defer imgui.igEnd();
             if (!imgui.igBeginMenuBar()) return;
             defer imgui.igEndMenuBar();
-            file_menu.draw(&testing_base_dir, file_dialog_context, &controller, &is_ui_open);
-            file_menu.update(&controller);
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
         }
 
         fn testFunction(ctx: sdk.ui.TestContext) !void {
@@ -1080,8 +1640,8 @@ test "should set is_ui_open to false when close ui button is clicked" {
             defer imgui.igEnd();
             if (!imgui.igBeginMenuBar()) return;
             defer imgui.igEndMenuBar();
-            file_menu.draw(&testing_base_dir, file_dialog_context, &controller, &is_ui_open);
-            file_menu.update(&controller);
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
         }
 
         fn testFunction(ctx: sdk.ui.TestContext) !void {
@@ -1089,6 +1649,154 @@ test "should set is_ui_open to false when close ui button is clicked" {
             ctx.setRef("Window");
             ctx.menuClick("File/Close UI");
             try testing.expectEqual(false, is_ui_open);
+        }
+    };
+    Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
+    defer imgui.IGFD_Destroy(Test.file_dialog_context);
+    const context = try sdk.ui.getTestingContext();
+    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
+}
+
+test "should trigger file menu actions with keyboard shortcuts while menu is closed" {
+    const Test = struct {
+        var file_dialog_context: *imgui.ImGuiFileDialog = undefined;
+        var controller: MockController = .{
+            .contains_unsaved_changes = false,
+            .file_path = .fromArray("./test.irony".*),
+        };
+        var is_ui_open: bool = true;
+        var shutdown_call_count: usize = 0;
+        var file_menu: FileMenu(.{ .Controller = MockController, .selfShutDown = selfShutdown }) = .{};
+
+        fn selfShutdown() void {
+            shutdown_call_count += 1;
+        }
+
+        fn guiFunction(_: sdk.ui.TestContext) !void {
+            _ = imgui.igBegin("Window", null, imgui.ImGuiWindowFlags_MenuBar);
+            defer imgui.igEnd();
+            if (!imgui.igBeginMenuBar()) return;
+            defer imgui.igEndMenuBar();
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
+        }
+
+        fn testFunction(ctx: sdk.ui.TestContext) !void {
+            ctx.keyPress(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_N, 1);
+            try testing.expectEqual(1, controller.clear_call_count);
+
+            ctx.keyPress(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_S, 1);
+            try testing.expectEqual(1, controller.save_call_count);
+            try testing.expectEqualStrings("./test.irony", controller.last_save_path.?.asSlice());
+            controller.mode = .live;
+            controller.did_last_save_or_load_succeed = true;
+            // Frame 1: file menu becomes idle. Frame 2: shortcut routes get registered again.
+            // Routes only take effect on the frame after they get registered, so the key press comes on frame 3.
+            ctx.yield(2);
+
+            ctx.keyPress(imgui.ImGuiMod_Ctrl | imgui.ImGuiMod_Shift | imgui.ImGuiKey_S, 1);
+            ctx.yield(1);
+            try ctx.expectItemExists("//Save As##save_dialog/**/##FileName");
+            try testing.expectEqual(1, controller.save_call_count);
+            ctx.keyPress(imgui.ImGuiKey_Escape, 1);
+            ctx.yield(3); // Test engine caches item lookups for 2 frames.
+            try ctx.expectItemNotExists("//Save As##save_dialog/**/##FileName");
+
+            ctx.keyPress(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_O, 1);
+            ctx.yield(1);
+            try ctx.expectItemExists("//Open##open_dialog/**/##FileName");
+            ctx.keyPress(imgui.ImGuiKey_Escape, 1);
+            ctx.yield(3); // Test engine caches item lookups for 2 frames.
+            try ctx.expectItemNotExists("//Open##open_dialog/**/##FileName");
+
+            try testing.expectEqual(0, shutdown_call_count);
+            ctx.keyPress(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_Q, 1);
+            try testing.expectEqual(1, shutdown_call_count);
+
+            try testing.expectEqual(1, controller.clear_call_count);
+            try testing.expectEqual(1, controller.save_call_count);
+            try testing.expectEqual(0, controller.load_call_count);
+        }
+    };
+    Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
+    defer imgui.IGFD_Destroy(Test.file_dialog_context);
+    const context = try sdk.ui.getTestingContext();
+    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
+}
+
+test "keyboard shortcuts should not trigger disabled file menu actions" {
+    const Test = struct {
+        var file_dialog_context: *imgui.ImGuiFileDialog = undefined;
+        var controller: MockController = .{ .total_frames = 0, .file_path = .fromArray("./test.irony".*) };
+        var is_ui_open: bool = true;
+        var file_menu: FileMenu(.{ .Controller = MockController, .selfShutDown = selfShutdown }) = .{};
+
+        fn selfShutdown() void {}
+
+        fn guiFunction(_: sdk.ui.TestContext) !void {
+            _ = imgui.igBegin("Window", null, imgui.ImGuiWindowFlags_MenuBar);
+            defer imgui.igEnd();
+            if (!imgui.igBeginMenuBar()) return;
+            defer imgui.igEndMenuBar();
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
+        }
+
+        fn testFunction(ctx: sdk.ui.TestContext) !void {
+            ctx.keyPress(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_N, 1);
+            ctx.keyPress(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_S, 1);
+            ctx.keyPress(imgui.ImGuiMod_Ctrl | imgui.ImGuiMod_Shift | imgui.ImGuiKey_S, 1);
+            ctx.yield(3); // Test engine caches item lookups for 2 frames.
+            try testing.expectEqual(0, controller.clear_call_count);
+            try testing.expectEqual(0, controller.save_call_count);
+            try ctx.expectItemNotExists("//Save As##save_dialog/**/##FileName");
+        }
+    };
+    Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
+    defer imgui.IGFD_Destroy(Test.file_dialog_context);
+    const context = try sdk.ui.getTestingContext();
+    try context.runTest(.{}, Test.guiFunction, Test.testFunction);
+}
+
+test "file menu keyboard shortcuts should be ignored while another modal dialog is open" {
+    const Test = struct {
+        var file_dialog_context: *imgui.ImGuiFileDialog = undefined;
+        var controller: MockController = .{ .contains_unsaved_changes = false };
+        var is_ui_open: bool = true;
+        var is_other_dialog_open: bool = true;
+        var shutdown_call_count: usize = 0;
+        var file_menu: FileMenu(.{ .Controller = MockController, .selfShutDown = selfShutdown }) = .{};
+
+        fn selfShutdown() void {
+            shutdown_call_count += 1;
+        }
+
+        fn guiFunction(_: sdk.ui.TestContext) !void {
+            _ = imgui.igBegin("Window", null, imgui.ImGuiWindowFlags_MenuBar);
+            defer imgui.igEnd();
+            if (ui.beginDialog(&is_other_dialog_open, "Other Dialog")) {
+                defer ui.endDialog();
+                _ = imgui.igButton("Content", .{});
+            }
+            if (!imgui.igBeginMenuBar()) return;
+            defer imgui.igEndMenuBar();
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
+        }
+
+        fn testFunction(ctx: sdk.ui.TestContext) !void {
+            try ctx.expectItemExists("//Other Dialog/Content");
+            ctx.keyPress(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_N, 1);
+            ctx.keyPress(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_Q, 1);
+            try testing.expectEqual(0, controller.clear_call_count);
+            try testing.expectEqual(0, shutdown_call_count);
+
+            is_other_dialog_open = false;
+            ctx.yield(1);
+            ctx.keyPress(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_N, 1);
+            ctx.keyPress(imgui.ImGuiMod_Ctrl | imgui.ImGuiKey_Q, 1);
+            try testing.expectEqual(1, controller.clear_call_count);
+            try testing.expectEqual(1, shutdown_call_count);
         }
     };
     Test.file_dialog_context = imgui.IGFD_Create() orelse @panic("Failed to create file dialog context.");
@@ -1117,8 +1825,8 @@ test "should call self shutdown when exit is clicked without unsaved changes" {
             defer imgui.igEnd();
             if (!imgui.igBeginMenuBar()) return;
             defer imgui.igEndMenuBar();
-            file_menu.draw(&testing_base_dir, file_dialog_context, &controller, &is_ui_open);
-            file_menu.update(&controller);
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
         }
 
         fn testFunction(ctx: sdk.ui.TestContext) !void {
@@ -1154,8 +1862,8 @@ test "should show correctly working unsaved changes dialog when exit is clicked 
             defer imgui.igEnd();
             if (!imgui.igBeginMenuBar()) return;
             defer imgui.igEndMenuBar();
-            file_menu.draw(&testing_base_dir, file_dialog_context, &controller, &is_ui_open);
-            file_menu.update(&controller);
+            file_menu.draw(testing.io, file_dialog_context, &controller, &is_ui_open);
+            file_menu.update(testing.io, &controller);
         }
 
         fn testFunction(ctx: sdk.ui.TestContext) !void {
@@ -1206,6 +1914,7 @@ test "should show correctly working unsaved changes dialog when exit is clicked 
             try testing.expectEqual(1, controller.save_call_count);
             try testing.expectEqual(1, shutdown_call_count);
             try testing.expectStringEndsWith(controller.last_save_path.?.asSlice(), "test.irony");
+            try testing.expectEqual(testing.io, controller.last_save_io);
             controller.mode = .live;
             controller.did_last_save_or_load_succeed = true;
             ctx.yield(1);
