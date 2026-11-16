@@ -42,13 +42,12 @@ const OverlayHud = struct {
     pub fn render(self: *const OverlayHud) void {
         if (!self.has_active_data) return;
 
-        var local_buffer: [32]u8 = [_]u8{0} ** 32;
-        var local_stream = std.io.fixedBufferStream(&local_buffer);
-        const w = local_stream.writer();
+        var local_buffer = std.mem.zeroes([32]u8);
+        var w = std.Io.Writer.fixed(&local_buffer);
 
         if (self.persistent_value > 0) w.writeByte('+') catch {};
         w.print("{}", .{self.persistent_value}) catch {};
-        const hud_string = local_stream.getWritten();
+        const hud_string = local_buffer[0..w.end];
 
         const draw_list = imgui.igGetForegroundDrawList_Nil();
         const current_font = imgui.igGetFont(); 
