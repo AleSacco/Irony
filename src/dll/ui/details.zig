@@ -69,19 +69,19 @@ const OverlayHud = struct {
             switch (AT) {
                 .high, .unblockable_high => {
                     bubble_color = 0x880000FF;
-                    attack_y_offset = viewport.*.Size.y * -0.35;
+                    attack_y_offset = viewport.*.Size.y * -0.4;
                 },
                 .mid, .unblockable_mid => {
                     bubble_color = 0x8800FFFF;
-                    attack_y_offset = 0.0;
+                    attack_y_offset = 0.5;
                 },
                 .low, .special_low, .unblockable_low => {
                     bubble_color = 0x88FF0000;
-                    attack_y_offset = viewport.*.Size.y * 0.2;
+                    attack_y_offset = viewport.*.Size.y * 0.25;
                 },
                 .throw => {
                     bubble_color = 0x88FF00FF;
-                    attack_y_offset = viewport.*.Size.y * -0.35;
+                    attack_y_offset = viewport.*.Size.y * -0.4;
                 },
                 else => {},
             }
